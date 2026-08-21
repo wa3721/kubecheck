@@ -1,0 +1,24 @@
+# e2e C6：中断信号（SIGINT）场景（工具运行中被 kill -INT，检查被中断）-> 期望 exit 130
+# 对应 e2e/e2e-test.sh run_c6
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flow-c6
+  namespace: flowtest
+  labels:
+    app: flow-c6
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flow-c6
+  template:
+    metadata:
+      labels:
+        app: flow-c6
+    spec:
+      containers:
+        - name: flow-c6
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args: ["sleep 3600"]

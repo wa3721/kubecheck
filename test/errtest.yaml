@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: errtest
+  namespace: dev
+  labels:
+    app: errtest
+spec:
+  restartPolicy: Never
+  containers:
+    - name: errtest
+      image: busybox:latest
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          while true; do
+            echo "[ERROR] something failed in pod errtest";
+            echo "[INFO] normal line";
+            sleep 1;
+          done

@@ -1,0 +1,24 @@
+# e2e C5：阶段3 日志命中错误关键字但 Pod 存活场景（循环打印 ERROR，进程不退出）-> 期望 exit 0（warning）
+# 对应 e2e/e2e-test.sh run_c5
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flow-c5
+  namespace: flowtest
+  labels:
+    app: flow-c5
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flow-c5
+  template:
+    metadata:
+      labels:
+        app: flow-c5
+    spec:
+      containers:
+        - name: flow-c5
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args: ["while true; do echo 'ERROR something went wrong'; sleep 2; done"]

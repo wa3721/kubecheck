@@ -1,0 +1,26 @@
+# e2e C3：阶段2 Pod 未进入 Running 超时场景（replicas=0 使阶段1 秒过，随后 scale 出被 taint 阻挡的 Pending Pod）-> 期望 exit 3
+# 对应 e2e/e2e-test.sh run_c3
+# 复现 Pending 场景需先执行：kubectl taint nodes <node> flowtest=block:NoSchedule
+# 再 apply 本文件并 scale 到期望副本数：kubectl -n flowtest scale deployment flow-c3 --replicas=2
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flow-c3
+  namespace: flowtest
+  labels:
+    app: flow-c3
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: flow-c3
+  template:
+    metadata:
+      labels:
+        app: flow-c3
+    spec:
+      containers:
+        - name: flow-c3
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args: ["sleep 3600"]

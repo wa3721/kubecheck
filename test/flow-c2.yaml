@@ -1,0 +1,29 @@
+# e2e C2：阶段1 滚动就绪超时场景（readinessProbe 永远失败 -> Pod 永不 Ready -> 滚动永不完成）-> 期望 exit 2
+# 对应 e2e/e2e-test.sh run_c2
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flow-c2
+  namespace: flowtest
+  labels:
+    app: flow-c2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flow-c2
+  template:
+    metadata:
+      labels:
+        app: flow-c2
+    spec:
+      containers:
+        - name: flow-c2
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args: ["sleep 3600"]
+          readinessProbe:
+            exec:
+              command: ["/bin/false"]
+            periodSeconds: 2
+            failureThreshold: 3

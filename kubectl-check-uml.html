@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>kubectl-check 插件 · UML 设计核对图（v0.6）</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #f5f7fb; --card: #ffffff; --border: #e2e8f0; --text: #1e293b;
+    --muted: #64748b; --accent: #2563eb; --accent-dark: #1d4ed8;
+    --red: #dc2626; --orange: #ea580c; --green: #16a34a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+  header { background: linear-gradient(135deg, #1e293b, #334155); color: #fff; padding: 28px 40px; }
+  header h1 { font-size: 24px; font-weight: 600; }
+  header p { color: #cbd5e1; margin-top: 6px; font-size: 14px; }
+  nav { position: sticky; top: 0; background: #1e293b; z-index: 100; display: flex; gap: 4px; padding: 8px 40px; flex-wrap: wrap; }
+  nav a { color: #cbd5e1; text-decoration: none; padding: 6px 14px; border-radius: 6px; font-size: 14px; }
+  nav a:hover { background: #334155; color: #fff; }
+  main { max-width: 1280px; margin: 0 auto; padding: 28px 40px 60px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px 28px; margin-bottom: 28px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+  .card h2 { font-size: 20px; margin-bottom: 6px; color: var(--accent-dark); }
+  .card h2 .tag { display: inline-block; font-size: 12px; background: #dbeafe; color: var(--accent-dark); border-radius: 4px; padding: 2px 8px; margin-left: 8px; vertical-align: middle; }
+  .card .desc { color: var(--muted); font-size: 14px; margin-bottom: 16px; }
+  .mermaid { display: flex; justify-content: center; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 10px 12px; text-align: left; vertical-align: top; }
+  th { background: #f1f5f9; font-weight: 600; }
+  tr:nth-child(even) td { background: #fafbfd; }
+  code { background: #eef2ff; color: var(--accent-dark); padding: 1px 6px; border-radius: 4px; font-family: "Cascadia Code", Consolas, monospace; font-size: 13px; }
+  .badge { display: inline-block; border-radius: 4px; padding: 2px 8px; font-size: 12px; font-weight: 600; color: #fff; }
+  .badge.red { background: var(--red); } .badge.orange { background: var(--orange); } .badge.green { background: var(--green); } .badge.gray { background: #64748b; }
+  ul.tight { margin: 8px 0 0 20px; } ul.tight li { margin: 4px 0; }
+  footer { text-align: center; color: var(--muted); font-size: 13px; padding: 20px; }
+  @media (max-width: 800px) { nav, main, header { padding-left: 16px; padding-right: 16px; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>kubectl-check 插件 · UML 设计核对图</h1>
+  <p>基于 SPEC：cobra 命令行 · client-go（第一级 Deployment informer 事件驱动 + 第二级 Pod 1s 轮询）· 两级独立检查（无整体超时）· 三段独立超时 · 日志错误落盘（Follow 实时流增量落盘+错误行红色标注） · 飞书告警 · 版本 v0.6+ / 2026-08-20</p>
+</header>
+
+<nav>
+  <a href="#usecase">用例图</a>
+  <a href="#class">类图</a>
+  <a href="#sequence">时序图</a>
+  <a href="#state">状态图</a>
+  <a href="#matrix">逻辑核对表</a>
+  <a href="#decisions">关键决策</a>
+</nav>
+
+<main>
+
+<!-- ============ 1. 用例图 ============ -->
+<div class="card" id="usecase">
+  <h2>1. 用例图<span class="tag">Use Case</span></h2>
+  <p class="desc">参与者：用户 / CI-CD 流水线（触发监控）、飞书机器人（告警接收）。系统能力覆盖就绪校验、Pod 状态监控、日志落盘与告警。</p>
+  <pre class="mermaid">
+flowchart LR
+    subgraph Actor["参与者"]
+        USER["用户 / 运维"]
+        CI["CI / CD 流水线"]
+        FEISHU["飞书机器人"]
+    end
+    subgraph System["kubectl-check 插件"]
+        UC1["第一级 校验 Deployment 就绪状态<br/>（--deploy-ready-timeout / -n）<br/>rolloutComplete 四条件"]
+        UC2["第二级 Pod 状态轮询 + 日志观察<br/>（--pod-ready-timeout / --log-check-timeout）"]
+        UC3["实时日志流采集（Follow）<br/>+ 错误关键字匹配（独立超时）"]
+        UC4["错误日志落盘<br/>namespace-podname-date.log<br/>Follow 实时流增量落盘 + 错误行标红"]
+        UC5["飞书告警<br/>就绪超时 / Pod 状态异常 / 容器退出<br/>重启超限 / 需要检查 / 中断"]
+        UC7["标准化退出码<br/>0 / 1 / 2 / 3 / 130"]
+    end
+    USER --> UC1
+    USER --> UC2
+    USER --> UC3
+    USER --> UC4
+    USER --> UC7
+    CI --> UC1
+    CI --> UC7
+    UC4 --> UC5
+    UC5 --> FEISHU
+  </pre>
+</div>
+
+<!-- ============ 2. 类图 ============ -->
+<div class="card" id="class">
+  <h2>2. 类图<span class="tag">Class</span></h2>
+  <p class="desc">核心类：cobra 命令（入口）→ Checker（编排）→ LogErrorRecorder（落盘）→ FeishuAlert（告警）。</p>
+  <pre class="mermaid">
+classDiagram
+    class Options {
+        +string Namespace
+        +string ResourceType
+        +string ResourceName
+        +int DeployReadyTimeoutSec
+        +int PodReadyTimeoutSec
+        +int LogCheckTimeoutSec
+        +int MaxRestart
+        +bool CheckPodStatus
+        +bool LogEnable
+        +[]string LogErrKeywords
+        +[]string LogIgnoreKeywords
+        +int LogTail
+        +string LogErrorDir
+        +string FeishuWebhook
+        +string FeishuSecret
+        +int FeishuDedupWindowSec
+        +bool Verbose
+    }
+    class CheckCommand {
+        +NewCheckCommand() *cobra.Command
+        +RunE(cmd, args) error
+        +parseArgs(c, args, opts)
+        +buildClient() *kubernetes.Clientset
+    }
+    class Checker {
+        -opts *Options
+        -clientset kubernetes.Interface
+        -feishu *FeishuAlert
+        -rec *LogErrorRecorder
+        -factory informers.SharedInformerFactory
+        -wg sync.WaitGroup
+        -cancels map[string]context.CancelFunc
+        +Run(ctx) int
+        -waitDeploymentReady(ctx)
+        -listTargetPods(ctx)
+        -waitForTargetPods(ctx)
+        -watchPods(ctx, pods)
+        -trackPod(ctx, pod)
+        -waitPodRunning(ctx, pod)
+        -watchPodLog(ctx, pod, runningAt)
+        -Interrupt()
+        -logf(format, ...)
+        -alert(event, key, detail)
+    }
+    class LogErrorRecorder {
+        +TrackLog(ctx, pod, errKw, ignoreKw, tail) (bool, error)
+        +RecordedPath string
+        +FilePath(ns, podName) string
+        -colorizeErrorLine(line, container, errKw, ignoreKw)
+        -appendFile(path)
+        -waitForContainerRunning(ctx, pod)
+    }
+    class FeishuAlert {
+        +Send(eventType, title, detail)
+        +Enabled() bool
+        -buildPayload(eventType, title, detail)
+        -signFeishu(timestamp)
+        -dedup(key) bool
+        -printConsole(eventType, title, detail)
+    }
+    CheckCommand --> Checker : 构造并执行
+    Checker --> LogErrorRecorder : 日志流采集 / 增量落盘
+    Checker --> FeishuAlert : 6 类事件告警（未配置则降级控制台）
+  </pre>
+</div>
+
+<!-- ============ 3. 时序图 ============ -->
+<div class="card" id="sequence">
+  <h2>3. 时序图<span class="tag">Sequence</span></h2>
+  <p class="desc">两级流程：第一级 Deployment informer 就绪超时→告警并直接退出（退出码 2）；第二级 waitForTargetPods 前置 → 逐 Pod「阶段2 waitPodRunning → 阶段3 watchPodLog」。优先级：Pod 异常 &gt; 日志告警。</p>
+  <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant CLI as cobra / kubectl-check
+    participant CHK as Checker
+    participant K8S as client-go / K8s
+    participant LR as LogErrorRecorder
+    participant FS as 落盘文件 (.log)
+    participant FA as FeishuAlert
+
+    CLI->>CHK: Run(ctx, opts)
+    Note over CHK: 第一级：waitDeploymentReady(ctx)
+    CHK->>K8S: Deployment informer 监听 (deploy-ready-timeout)<br/>WaitForCacheSync + 首次同步后补查
+    alt rolloutComplete 命中（四条件）
+        K8S-->>CHK: 就绪事件
+    else 就绪超时
+        CHK->>FA: 发送告警（Deployment 就绪超时）
+        FA-->>CHK: 优先飞书 / 降级控制台
+        Note over CHK: 直接退出（退出码 2，不进入第二级）
+    end
+    CHK->>K8S: waitForTargetPods（PodReadyTimeout 内 1s 轮询，等待 Pod 出现）
+    loop 每个 Pod（阶段2 → 阶段3 串行）
+        par 阶段2：Pod 状态轮询 waitPodRunning
+            CHK->>K8S: 1s 轮询 Get（--pod-ready-timeout）
+            K8S-->>CHK: Running / 超时未就绪
+            alt 超时未进入 Running
+                CHK->>FA: alert(EventPodStatus)
+                CHK-->>CLI: 退出 code=3
+            end
+        and 阶段3（进入 Running 后）：watchPodLog 日志观察
+            loop 实时日志流读取（--log-check-timeout）
+                K8S-->>CHK: 日志行
+                CHK->>LR: TrackLog（命中错误关键字 → errorHit）
+                LR->>FS: 逐行增量追加落盘，错误行 ANSI 红色标注
+            end
+            par 退出检测（1s ticker）
+                CHK->>K8S: containerExitCode / totalRestartCount
+            end
+            alt 容器异常退出（exit code != 0）
+                CHK->>FA: alert(EventContainerExit) + waitLogFlush
+                CHK-->>CLI: 退出 code=3
+            else 重启次数超限
+                CHK->>FA: alert(EventRestartLimit)
+                CHK-->>CLI: 退出 code=3
+            else 日志窗口结束且 errorHit（Pod 存活）
+                CHK->>FA: alert(EventPendingCheck)「需要检查」（非阻塞）
+                CHK-->>CLI: 退出 code=0
+            else 日志窗口结束无错误
+                CHK-->>CLI: 退出 code=0
+            end
+        end
+    end
+  </pre>
+</div>
+
+<!-- ============ 4. 状态图 ============ -->
+<div class="card" id="state">
+  <h2>4. 状态图<span class="tag">State</span></h2>
+  <p class="desc">插件生命周期（无整体超时、无稳定窗口）：解析 → 第一级 Deployment informer 等待就绪（超时告警并直接退出）→ 第二级「阶段2 状态轮询 → 阶段3 日志观察」→ 按优先级判定场景（1/2/3）→ 退出。</p>
+  <pre class="mermaid">
+stateDiagram-v2
+    [*] --> Parsing : cobra Execute
+    Parsing --> Checking : 参数合法
+    Parsing --> [*] : 参数非法 / -h
+    Checking --> Waiting : informer 缓存同步完成
+    Waiting --> Monitoring : rolloutComplete 命中（四条件）
+    Waiting --> [*] : 就绪超时 (告警后退出, code=2)
+    Monitoring --> PodReady : Pod 在 pod-ready-timeout 内进入 Running
+    Monitoring --> PodNotReady : Pod 未进入 Running / 容器退出 / 重启超限
+    Monitoring --> LogHit : Pod 就绪且存活但日志命中错误
+    PodNotReady --> [*] : 发送告警（EventPodStatus/ContainerExit/RestartLimit）, exit=3
+    LogHit --> NotifyCheck : 日志窗口结束（日志已全程增量落盘）
+    NotifyCheck --> [*] : 发送「需要检查」提醒 (非阻塞), exit=0
+    PodReady --> [*] : 无错误日志, exit=0
+    Monitoring --> [*] : 收到中断信号<br/>发送 EventInterrupted 告警, exit=130
+  </pre>
+</div>
+
+<!-- ============ 5. 逻辑核对表 ============ -->
+<div class="card" id="matrix">
+  <h2>5. 逻辑核对表<span class="tag">Check Matrix</span></h2>
+  <p class="desc">覆盖全部关键场景：行为 → 退出码 → 飞书告警。请逐行核对是否符合预期。</p>
+  <table>
+    <thead>
+      <tr><th style="width:36px">#</th><th>场景</th><th>插件行为</th><th style="width:70px">退出码</th><th>飞书告警</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>场景1：Pod 在 pod-ready-timeout 内就绪，无错误日志</td>
+        <td>正常结束</td>
+        <td><span class="badge green">0</span></td>
+        <td>无</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>场景2：Pod 未进入 Running / 容器异常退出 / 重启超限</td>
+        <td>发送告警后异常退出（<code>--max-restart</code> 为 0 时不检查重启次数）</td>
+        <td><span class="badge red">3</span></td>
+        <td>Pod 状态异常 / 容器异常退出 / 重启次数超限（优先飞书，降级控制台）</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>场景3：Pod 已就绪且存活但日志命中错误关键字</td>
+        <td>日志全程 Follow 实时流增量落盘（错误行红色标注），窗口结束后发送「需要检查」提醒</td>
+        <td><span class="badge green">0</span></td>
+        <td>需要检查（非阻塞，不影响退出码）</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td>第一级：Deployment 超时未就绪（<code>rolloutComplete</code> 四条件未满足）</td>
+        <td>告警后直接退出（不进入第二级）</td>
+        <td><span class="badge gray">2*</span></td>
+        <td>Deployment 就绪超时（优先飞书，降级控制台）</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td>命中忽略关键字（<code>--log-ignore-keywords</code>）</td>
+        <td>仍追加落盘但不标红、不作为错误，继续追踪</td>
+        <td><span class="badge gray">-</span></td>
+        <td>无</td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td>未产生任何 Pod</td>
+        <td>按 Pod 状态异常处理，发送告警后异常退出</td>
+        <td><span class="badge red">3</span></td>
+        <td>未产生 Pod（优先飞书，降级控制台）</td>
+      </tr>
+      <tr>
+        <td>7</td>
+        <td>参数非法 / 客户端构建失败 / 查询失败</td>
+        <td>终止（返回错误并退出）</td>
+        <td><span class="badge red">1</span></td>
+        <td>无</td>
+      </tr>
+      <tr>
+        <td>8</td>
+        <td>未配置飞书 Webhook（<code>--feishu-webhook</code> 为空）</td>
+        <td>所有告警事件降级为控制台直接打印（<code>[ALERT][事件类型]</code>），不静默丢弃；退出码与判定逻辑不变</td>
+        <td><span class="badge gray">-</span></td>
+        <td>控制台打印替代飞书推送</td>
+      </tr>
+      <tr>
+        <td>9</td>
+        <td>收到中断信号（Ctrl+C / SIGTERM）</td>
+        <td>Interrupt()：取消上下文 → 等待收尾 → 发送 EventInterrupted 告警后退出，<strong>不误报为业务错误</strong></td>
+        <td><span class="badge gray">130</span></td>
+        <td>检查被中断（EventInterrupted）</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ============ 6. 关键决策 ============ -->
+<div class="card" id="decisions">
+  <h2>6. 关键设计决策<span class="tag">Decisions</span></h2>
+  <ul class="tight">
+    <li><strong>命令行框架 cobra</strong>：<code>github.com/spf13/cobra</code>，遵循 kubectl 原生参数风格。</li>
+    <li><strong>两级独立检查，无整体超时</strong>：三段超时 <code>--deploy-ready-timeout</code> / <code>--pod-ready-timeout</code> / <code>--log-check-timeout</code> 相互独立，无顶层兜底超时、无 stable 稳定窗口。</li>
+    <li><strong>第一级 Deployment 就绪超时直接中断</strong>：informer 事件驱动 + <code>rolloutComplete</code> 四条件判定；超时未就绪发送告警（优先飞书 / 降级控制台）后，以退出码 2 直接退出，不再进入第二级 Pod 检查。</li>
+    <li><strong>第二级为轮询实现</strong>：Pod 侧不使用 informer，<code>waitForTargetPods</code> / <code>waitPodRunning</code> / 退出检测均为 1s 间隔 List/Get 轮询；仅第一级 Deployment 使用 informer 事件驱动。</li>
+    <li><strong>优先级：Pod 异常 &gt; 日志告警</strong>：场景2（Pod 未进入 Running / 容器退出 / 重启超限）→ 告警 + 异常退出 code=3；即便同时命中错误日志也按场景2。</li>
+    <li><strong>场景3：Pod 就绪且存活但日志命中错误</strong>：日志全程增量落盘（错误行红色标注），日志窗口结束后发送「需要检查」提醒，<strong>不退出</strong>（code=0，非阻塞）。</li>
+    <li><strong>Follow 实时流增量追加写（O_APPEND）</strong>：文件恒保存日志流采集到的全部日志（非仅错误行）；同 Pod 新日志按时间顺序持续追加，<strong>新旧错误共存于同一文件</strong>，无需重复拉取。</li>
+    <li><strong>错误行红色标注</strong>：命中 <code>--log-err-keywords</code> 的行以 ANSI <code>\x1b[31m...\x1b[0m</code> 标红；忽略行不标红。</li>
+    <li><strong>告警非阻塞</strong>：飞书发送独立 goroutine + 短超时，失败仅 warning，不影响主流程判定与退出码。</li>
+    <li><strong>未配置 Webhook 降级控制台</strong>：<code>--feishu-webhook</code> 为空时，所有告警事件降级为控制台直接打印（带去重），不静默丢弃；退出码与判定逻辑不变。</li>
+    <li><strong>退出码 130 = 中断主动退出</strong>：收到 SIGINT/SIGTERM 触发 <code>Interrupt()</code>：取消上下文 → 等待收尾 → 发送 <code>EventInterrupted</code> 告警后退出，不误报为业务错误。</li>
+    <li><strong>时间参数秒级化</strong>：<code>--deploy-ready-timeout</code> / <code>--pod-ready-timeout</code> / <code>--log-check-timeout</code> / <code>--feishu-dedup-window</code> 统一为整数秒（int 秒）。</li>
+    <li><strong>文件命名</strong>：<code>{namespace}-{podName}-{date}.log</code>（date=20060102，跨天自动切换）。</li>
+  </ul>
+</div>
+
+</main>
+
+<footer>kubectl-check 插件设计 · UML 核对图 · 配合《kubectl-check-architecture.md》与《SPEC.md》使用 · 已按当前代码同步修正</footer>
+
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'default', securityLevel: 'loose', flowchart: { curve: 'basis' } });
+</script>
+</body>
+</html>

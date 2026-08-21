@@ -1,0 +1,24 @@
+# e2e C4：阶段3 容器异常退出场景（容器 sleep 45s 后 exit 1）-> 期望 exit 3
+# 对应 e2e/e2e-test.sh run_c4
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flow-c4
+  namespace: flowtest
+  labels:
+    app: flow-c4
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flow-c4
+  template:
+    metadata:
+      labels:
+        app: flow-c4
+    spec:
+      containers:
+        - name: flow-c4
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args: ["sleep 45; exit 1"]
