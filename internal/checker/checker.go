@@ -599,9 +599,12 @@ func (c *Checker) alertPodExit(pod corev1.Pod, code int32) {
 			fmt.Sprintf("Pod %s 命名空间 %s 重启次数超过上限（%d 次）", pod.Name, pod.Namespace, c.opts.MaxRestart))
 		return
 	}
-	c.alert(feishu.EventContainerExit, pod.Name,
-		fmt.Sprintf("Pod %s 命名空间 %s 容器异常退出（退出码 %d），日志已落盘: %s",
-			pod.Name, pod.Namespace, code, c.rec.RecordedPath(pod.Namespace, pod.Name)))
+	msg := fmt.Sprintf("Pod %s 命名空间 %s 容器异常退出（退出码 %d）",
+		pod.Name, pod.Namespace, code)
+	if path := c.rec.RecordedPath(pod.Namespace, pod.Name); path != "" {
+		msg += fmt.Sprintf("，日志已落盘: %s", path)
+	}
+	c.alert(feishu.EventContainerExit, pod.Name, msg)
 }
 
 // Interrupt 收到中断信号（SIGINT/SIGTERM）时调用：

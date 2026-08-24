@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app-golang
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: golang-demo
+  namespace: app-golang
+  labels:
+    app: golang-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: golang-demo
+  template:
+    metadata:
+      labels:
+        app: golang-demo
+    spec:
+      containers:
+        - name: golang-demo
+          image: demo-golang:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi

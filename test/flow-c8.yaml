@@ -1,0 +1,32 @@
+# 测试用例 c8：recorder 忽略关键字优先分支
+# 覆盖代码：recorder.TrackLog 中 hitAny(line, errKw) && !hitIgnore(line, ignoreKw) 双条件判定，
+#           以及 colorizeErrorLine 中忽略行不标红逻辑。
+# 场景：容器持续输出含 "ERROR" 的行，但该行同时命中 --log-ignore-keyword "expected"。
+#       由于 ignore 优先级高于 error，该行既不算 errorHit 也不落盘，不置 warning。
+# 运行：
+#   kubectl-check deployment/flow-c8 -n flowtest \
+#     --log-error-dir /tmp/flowlogs --log-error-keyword ERROR --log-ignore-keyword expected \
+#     --deploy-ready-timeout 60 --pod-ready-timeout 30 --log-check-timeout 12
+# 期望：exit 0；/tmp/flowlogs 下不产生 flowtest-flow-c8-*.log 文件。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flow-c8
+  namespace: flowtest
+  labels:
+    app: flow-c8
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flow-c8
+  template:
+    metadata:
+      labels:
+        app: flow-c8
+    spec:
+      containers:
+        - name: flow-c8
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args: ["while true; do echo '[ERROR] this is an expected error'; sleep 2; done"]

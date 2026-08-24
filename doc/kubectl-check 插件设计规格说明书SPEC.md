@@ -20,7 +20,7 @@
 
 - 标准化输出：区分正常通过、就绪超时、Pod 异常、日志告警等结果，输出清晰日志与退出码（0/1/2/3/130）
 
-- 错误日志落盘：日志关键字命中后不终止监控，将该 Pod 从日志流中采集到的日志**增量追加落盘**（错误行红色标注），供复盘完整错误现场
+- 错误日志落盘：仅命中错误关键字时才将该 Pod 从"日志起点到报错行"的日志**增量追加落盘**（错误行红色标注）；未命中错误且未报错退出的正常应用不产生日志文件，供复盘完整错误现场
 
 - 飞书告警：容器异常退出、Pod 状态异常、重启超限、就绪超时、日志需检查、检查被中断等事件，支持推送飞书机器人
 
@@ -119,7 +119,7 @@ Deployment 就绪后，先通过 **Deployment → ReplicaSet（最大 revision�
 
 - 支持自定义错误关键字（默认内置 error、panic、fatal、exception、crash 等核心异常关键词）
 
-- 匹配到异常日志后，**不终止监控**：日志全程增量落盘至 `{namespace}-{podName}-{date}.log`（错误行红色标注），并继续追踪后续状态
+- 匹配到异常日志后，**不终止监控**：将该 Pod 从"日志起点到报错行"的日志落盘至 `{namespace}-{podName}-{date}.log`（错误行红色标注），并继续追踪后续状态；未命中错误且未报错退出的正常应用不产生日志文件
 
 - 日志类飞书告警的触发规则：
   - 容器随后异常退出（exit code != 0）→ `EventContainerExit`（退出码 3，附错误日志文件路径）
@@ -138,15 +138,20 @@ Deployment 就绪后，先通过 **Deployment → ReplicaSet（最大 revision�
 
 三段超时相互独立，**无顶层整体超时**；任一级超时按各自退出码退出（2/3/3）。时间类参数统一为**秒级（int 秒）**，支持自定义配置。
 
-## 3.4 错误日志落盘（Follow 实时流增量追加写）
+## 3.4 错误日志落盘（命中错误关键字才落盘）
 
 - 文件命名：`{namespace}-{podName}-{date}.log`（date 格式 20060102，跨天自动切换新文件），目录由 `--log-error-dir` 指定（默认当前工作目录，不存在自动创建）
 
-- 记录内容：进入 Running 后由 `GetLogs(Container, TailLines: --log-tail, Timestamps: true, Follow: true)` 开启流式读取，**逐行增量追加**写入文件（`O_CREATE|O_APPEND|O_WRONLY`），不区分是否命中关键字；命中错误关键字的行加 ANSI 红色标注，忽略关键字命中的行不标红
+- 记录内容：进入 Running 后由 `GetLogs(Container, TailLines: --log-tail, Timestamps: true, Follow: true)` 开启流式读取；未命中错误前**内存缓冲**（环形缓冲，容量随 --log-tail 放大），**首次命中错误关键字**时才打开文件（`O_CREATE|O_APPEND|O_WRONLY`），把「启动到报错」的缓冲日志一次性写入，此后逐行增量追加；命中错误关键字的行加 ANSI 红色标注，忽略关键字命中的行不标红
+
+- 落盘条件（与检查结论联动）：
+  - 命中错误关键字 → 落盘，错误行红色标注
+  - 容器异常退出（exit code != 0，即便日志未命中关键字）→ 落盘缓冲日志保留现场（已退出容器降级非 Follow + 独立短超时 ctx 拉历史日志）
+  - 正常应用（未命中错误、未报错退出）→ 不落盘，不产生文件
 
 - 红色标注：命中 `--log-err-keywords` 的行以 ANSI 红色转义码包裹，其余行保持默认色；每行带 `[时间戳] [container=xxx]` 前缀便于区分多容器
 
-- 增量追加：同 Pod 后续新日志按时间顺序持续追加到同一文件，新旧错误共存；日志流中断（Pod 退出/窗口结束）时 flush 后关闭文件
+- 增量追加：文件打开后同 Pod 后续新日志按时间顺序持续追加到同一文件，多次命中错误增量更新，新旧错误共存；日志流中断（Pod 退出/窗口结束）时 flush 后关闭文件
 
 ## 3.5 飞书告警
 
@@ -205,7 +210,7 @@ Deployment 就绪后，先通过 **Deployment → ReplicaSet（最大 revision�
 |--log-err-keywords|自定义日志异常匹配关键字，多个逗号分隔|error,panic,fatal,exception,crash|--log-err-keywords=超时,失败|
 |--log-ignore-keywords|自定义忽略的无害日志关键字，避免误报|空|--log-ignore-keywords=debug,心跳|
 |--log-tail|启动监控时回溯读取的日志行数|100|--log-tail=200|
-|--log-error-dir|错误日志落盘目录（文件：{namespace}-{podName}-{date}.log，错误行红色标注，Follow 流增量追加写）|.（当前目录）|--log-error-dir=./errlogs|
+|--log-error-dir|错误日志落盘目录（文件：{namespace}-{podName}-{date}.log，命中错误关键字才落盘，错误行红色标注，增量追加写）|.（当前目录）|--log-error-dir=./errlogs|
 
 ## 4.5 通用参数
 
@@ -232,7 +237,7 @@ Deployment 就绪后，先通过 **Deployment → ReplicaSet（最大 revision�
 4. **第二级：逐 Pod 并行追踪**：`watchPods` 为每个目标 Pod 启动 goroutine：先 `waitPodRunning` 等待 `Phase == Running`（1s 轮询，`--pod-ready-timeout` 每 Pod 独立计时），超时 → Pod 失败 + `EventPodStatus` 告警；进入 Running 且 `--log-enable` 时启动日志观察。
 
 5. **日志观察（watchPodLog，两路并行）**：
-   - 日志流：`rec.TrackLog` 以 Follow 流式读取并逐行增量落盘（错误行标红），命中错误关键字（且未命中忽略规则）标记 errorHit；
+   - 日志流：`rec.TrackLog` 以 Follow 流式读取，命中错误关键字（且未命中忽略规则）才落盘（错误行标红）并标记 errorHit；容器已退出时降级非 Follow 拉历史日志；
    - 退出检测：每 1s 检查容器状态，任一容器 `Terminated` 且 `exitCode != 0` → `EventContainerExit`；`--max-restart > 0` 且重启次数超限 → `EventRestartLimit`；
    - 触发退出/超限：停止日志流、等待 flush（5s 兜底）后置 Pod 失败并发送对应告警；
    - 日志窗口结束（`--log-check-timeout` 到期）：若 errorHit → `setWarning`（聚合时补发 `EventPendingCheck`）。
@@ -339,6 +344,6 @@ Deployment 就绪后，先通过 **Deployment → ReplicaSet（最大 revision�
 
 - **Pod 稳定性扩展**：在 Deployment 就绪事件回调基础上，新增 Pod 状态轮询、容器退出检测、重启计数检查，补充原生缺失的运行态校验
 
-- **日志监控扩展**：Pod 进入 Running 后自动启动 Follow 日志流长连接与退出检测并行执行，互不阻塞；日志逐行增量落盘（错误行标红），命中错误关键字不终止监控
+- **日志监控扩展**：Pod 进入 Running 后自动启动 Follow 日志流长连接与退出检测并行执行，互不阻塞；命中错误关键字才落盘（错误行标红），命中错误关键字不终止监控
 
 - **异常快速终止**：容器异常退出、重启超限等即时失败场景，立即取消该 Pod 的日志上下文并置失败，最终聚合后快速退出（码 3）；日志关键字命中除外（仅落盘，不终止，继续追踪）

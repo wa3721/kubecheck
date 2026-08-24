@@ -1,0 +1,33 @@
+# 测试用例 c13：recorder 命中错误关键字 + ignore 混合分支
+# 覆盖代码：recorder.TrackLog 中 hitAny 与 hitIgnore 的逐行判定——行含 "FATAL"（错误关键字）且不含
+#           被忽略的 "known issue"，则命中 errorHit 并落盘；同时验证含 ignore 关键字的错误行被正确过滤。
+# 场景：容器交替输出两类行：(a) 含 "FATAL" 且不含 ignore 关键字 -> 应标红并落盘；
+#       (b) 含 "FATAL" 且同时含 ignore 关键字 "known issue" -> 应被忽略。
+# 运行：
+#   kubectl-check deployment/flow-c13 -n flowtest \
+#     --log-error-dir /tmp/flowlogs --log-error-keyword FATAL --log-ignore-keyword "known issue" \
+#     --deploy-ready-timeout 60 --pod-ready-timeout 30 --log-check-timeout 12
+# 期望：exit 0（容器未退出）；/tmp/flowlogs 下产生 flowtest-flow-c13-*.log，
+#       文件仅包含命中 FATAL 且未被 ignore 的行，且标红。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flow-c13
+  namespace: flowtest
+  labels:
+    app: flow-c13
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flow-c13
+  template:
+    metadata:
+      labels:
+        app: flow-c13
+    spec:
+      containers:
+        - name: flow-c13
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args: ["while true; do echo '[FATAL] connection refused for host'; echo '[FATAL] this is a known issue, ignore it'; sleep 3; done"]

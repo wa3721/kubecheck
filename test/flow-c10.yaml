@@ -1,0 +1,38 @@
+# 测试用例 c10：checker 重启超限（MaxRestart）分支
+# 覆盖代码：checker.watchPodLog 中 totalRestartCount > --max-restart 时发送 exitCh <- -1，
+#           触发 EventRestartLimit 告警，检查以 exit 3 结束。
+# 场景：容器先就绪（sleep 25 内 Pod Ready，阶段1 通过），随后以 exit 0 反复重启，
+#       每次重启 RestartCount+1，累计超过 --max-restart 后触发"重启次数超限"。
+# 注意：
+#   - 必须"先就绪再重启"：容器一启动就崩溃会导致 Pod 永不 Ready，阶段1 前置阻断先超时（exit 2）。
+#   - 用 exit 0 而非非 0 退出：checkExit 中 containerExitCode 优先于 MaxRestart 判定，
+#     非 0 退出会先走"容器异常退出"分支，MaxRestart 分支永远触发不了。
+#   - 无错误日志且 exit 0（非异常退出），故不落盘文件。
+# 运行：
+#   kubectl-check deployment/flow-c10 -n flowtest \
+#     --log-error-dir /tmp/flowlogs --log-error-keyword ERROR \
+#     --max-restart 1 \
+#     --deploy-ready-timeout 90 --pod-ready-timeout 30 --log-check-timeout 120
+# 期望：exit 3；控制台告警"重启次数超过上限"；不产生落盘文件。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flow-c10
+  namespace: flowtest
+  labels:
+    app: flow-c10
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flow-c10
+  template:
+    metadata:
+      labels:
+        app: flow-c10
+    spec:
+      containers:
+        - name: flow-c10
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args: ["sleep 25; exit 0"]

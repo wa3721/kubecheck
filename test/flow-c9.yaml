@@ -1,0 +1,39 @@
+# 测试用例 c9：recorder 多容器遍历分支
+# 覆盖代码：recorder.TrackLog 中对 pod.Status.ContainerStatuses 的循环遍历（每容器独立起 goroutine），
+#           以及 containerExitCode 对任一容器 Terminated 且 exit code != 0 的判定。
+# 场景：Pod 含两个容器，main 容器持续存活不报错；sidecar 容器先就绪（sleep 30 内两个容器
+#       均 Ready，阶段1 通过），随后以 exit 3 报错退出（退出后进入 CrashLoopBackOff，
+#       但不影响已通过的阶段1）。验证多容器场景下仍能捕获报错容器、落盘并置 pod failure。
+# 注意：sidecar 必须先就绪再退出，否则 Pod 永不 Ready，阶段1 前置阻断会先超时（exit 2）。
+# 运行：
+#   kubectl-check deployment/flow-c9 -n flowtest \
+#     --log-error-dir /tmp/flowlogs --log-error-keyword ERROR \
+#     --deploy-ready-timeout 90 --pod-ready-timeout 30 --log-check-timeout 90
+# 期望：exit 3；/tmp/flowlogs 下产生 flowtest-flow-c9-*.log（含 sidecar 的 ERROR 行），
+#       告警提示容器异常退出（退出码 3）。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flow-c9
+  namespace: flowtest
+  labels:
+    app: flow-c9
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flow-c9
+  template:
+    metadata:
+      labels:
+        app: flow-c9
+    spec:
+      containers:
+        - name: main
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args: ["echo '[INFO] main container healthy'; while true; do echo '[INFO] heartbeat'; sleep 3; done"]
+        - name: sidecar
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args: ["sleep 30; echo '[ERROR] sidecar init failed'; exit 3"]

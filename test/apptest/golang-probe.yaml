@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app-golang
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: golang-probe
+  namespace: app-golang
+  labels:
+    app: golang-probe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: golang-probe
+  template:
+    metadata:
+      labels:
+        app: golang-probe
+    spec:
+      containers:
+        - name: golang-probe
+          image: demo-golang:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          # startup：慢启动保护，启动成功后自动停止探测
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+            successThreshold: 1
+          # readiness：就绪判断，成功后加入 Service 端点
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+            successThreshold: 1
+          # liveness：存活判断，比 readiness 更宽松避免抖动重启
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+            successThreshold: 1
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi

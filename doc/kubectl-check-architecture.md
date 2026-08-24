@@ -43,7 +43,7 @@ flowchart TD
     AlertPod --> Result3
 
     PodReady -->|是| LogStream[阶段3: watchPodLog<br/>日志观察两路并行]
-    LogStream --> LT[日志流: rec.TrackLog<br/>Follow 实时逐行增量落盘<br/>命中错误关键字标记 errorHit]
+    LogStream --> LT[日志流: rec.TrackLog<br/>Follow 实时跟踪，命中错误关键字才落盘<br/>首次命中写「启动到报错」缓冲日志，后续增量追加<br/>容器报错退出也落盘保留现场]
     LogStream --> EX[退出检测: 1s ticker<br/>containerExitCode / totalRestartCount]
     EX -->|容器退出 exit!=0| AlertExit[alert EventContainerExit<br/>+ waitLogFlush 落盘] --> Result3
     EX -->|重启超限| AlertRestart[alert EventRestartLimit] --> Result3
@@ -115,9 +115,9 @@ flowchart TD
         aggregate["Run 内聚合: hasPodFailure/hasWarning"]
     end
 
-    subgraph LogFile["错误日志收集层（Follow 实时流增量追加写）"]
+    subgraph LogFile["错误日志收集层（命中错误关键字才落盘）"]
         logFilePath["rec.FilePath(ns, podName)<br/>生成: {dir}/{ns}-{podName}-{date}.log"]
-        trackLogWrite["rec.TrackLog(ctx, pod, errKw, ignoreKw, tail)<br/>waitForContainerRunning 后<br/>GetLogs(Container, TailLines, Timestamps, Follow)<br/>逐行增量追加落盘<br/>命中错误关键字标记 errorHit"]
+        trackLogWrite["rec.TrackLog(ctx, pod, errKw, ignoreKw, tail)<br/>waitForContainerRunning 后<br/>GetLogs(Container, TailLines, Timestamps, Follow)<br/>先缓冲，命中错误才打开文件<br/>首次命中写「启动到报错」缓冲日志，后续增量追加<br/>容器报错退出也落盘保留现场"]
         colorizeLine["colorizeErrorLine(line, container, errKw, ignoreKw)<br/>命中错误关键字的行加红色标注<br/>[container=xx] 前缀 + ANSI \\x1b[31m ... \\x1b[0m"]
         appendFile["appendFile(path)<br/>os.OpenFile(O_CREATE|O_APPEND|O_WRONLY)"]
     end
@@ -180,9 +180,9 @@ flowchart TD
 - Deployment 监听：`informerFactory.Apps().V1().Deployments().Informer().AddEventHandler` + `cache.WaitForCacheSync`
 - Pod 发现：`clientset.AppsV1().ReplicaSets().List`（按 ownerReferences 过滤）+ `clientset.CoreV1().Pods().List`（按 new_rs selector / pod-template-hash；退化用 Deployment selector；过滤 DeletionTimestamp 非空）
 - Pod 状态轮询：`clientset.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})`（1s ticker，判断 `Status.Phase == Running`；退出检测判断容器 `State.Terminated` 与 `RestartCount`）
-- 日志流（实时监控/关键字判断/增量落盘）：`clientset.CoreV1().Pods(ns).GetLogs(name, &PodLogOptions{Container, TailLines: --log-tail, Timestamps: true, Follow: true}).Stream(ctx)`（无 SinceTime 快照拉取）
+- 日志流（实时监控/关键字判断/条件落盘）：`clientset.CoreV1().Pods(ns).GetLogs(name, &PodLogOptions{Container, TailLines: --log-tail, Timestamps: true, Follow: true}).Stream(ctx)`（无 SinceTime 快照拉取；容器已退出时降级非 Follow + 独立短超时 ctx 拉历史日志）
 - 缓存/生命周期：`informerFactory.Start(ctxTimeout.Done())` / `informerFactory.WaitForCacheSync`
-- 错误日志落盘：标准库 `os.OpenFile(path, O_CREATE|O_APPEND|O_WRONLY)`（增量追加，逐行 `fmt.Fprintln`）；无目录收尾扫描
+- 错误日志落盘：标准库 `os.OpenFile(path, O_CREATE|O_APPEND|O_WRONLY)`（命中错误关键字才打开文件，写缓冲的「启动到报错」日志后增量追加 `fmt.Fprintln`）；未命中错误且未报错退出不产生文件
 - 颜色标注：ANSI 转义码（红色 `\x1b[31m` / 复位 `\x1b[0m`）
 - 飞书告警：`net/http` POST webhook + `crypto/hmac`（`--feishu-secret` 签名校验模式）
 
@@ -202,7 +202,7 @@ flowchart LR
 ```
 
 - **Pod 异常（场景2）优先级最高**：只要存在一个 Pod 未进入 Running、未产生 Pod、容器异常退出或重启超限，即按场景2 处理（告警 + 异常退出 code=3）；即便同时有 Pod 命中错误日志，因「Pod 异常 > 日志告警」也按场景2；
-- **场景3（Pod 已就绪且存活但存在错误日志）不终止流程**：日志已全程增量落盘，窗口结束后发送「需要检查」提醒，返回 code=0；
+- **场景3（Pod 已就绪且存活但存在错误日志）不终止流程**：命中错误关键字日志已落盘，窗口结束后发送「需要检查」提醒，返回 code=0；
 - **第一级 Deployment 就绪超时直接终止流程**：告警后以退出码 2 退出，不进入第二级 Pod 追踪。
 
 ### 3.2 退出码映射
@@ -228,12 +228,13 @@ flowchart LR
 - 文件名：`{namespace}-{podName}-{date}.log`（如 `delta-test-app-76b5f8d5c9-abc12-20260815.log`），date 格式 `20060102`，跨天自动切换新文件；
 - 存放目录：`--log-error-dir` 指定（默认当前工作目录 `.`），目录不存在自动创建。
 
-### 4.2 记录内容（Follow 实时流增量追加，非仅错误行）
+### 4.2 记录内容（命中错误关键字才落盘）
 
-- 文件记录该 Pod **进入 Running 后日志流中采集到的全部日志**（非仅命中关键字的行），便于复盘完整错误现场与上下文；
-- 日志来源：Pod 进入 Running 后调用 `GetLogs(&PodLogOptions{Container, TailLines: --log-tail, Timestamps: true, Follow: true}).Stream(ctx)` 开启流式读取，`--log-tail`（默认 100）回溯容器近期日志，此后**逐行增量追加**写入文件，无需等命中错误才拉取快照；
+- 文件记录该 Pod **命中错误关键字时"从日志起点（含 --log-tail 回溯）到报错行"的日志**，便于复盘完整错误现场与上下文；未命中错误且未报错退出的正常应用**不产生日志文件**；
+- 日志来源：Pod 进入 Running 后调用 `GetLogs(&PodLogOptions{Container, TailLines: --log-tail, Timestamps: true, Follow: true}).Stream(ctx)` 开启流式读取，`--log-tail`（默认 100）回溯容器近期日志；未命中错误前**内存缓冲**（环形缓冲，容量随 --log-tail 放大），首次命中错误时把缓冲日志一次性落盘，此后**逐行增量追加**；
 - **错误行红色标注**：命中 `--log-err-keywords` 的行用 ANSI 转义码 `\x1b[31m`（红色）包裹、行尾 `\x1b[0m` 复位，其余行保持默认色；文件为文本 `.log`，终端 `cat`/`tail` 查看即可见红色错误行；
-- 忽略规则（`--log-ignore-keywords`）命中的行**不标注红色**（仍追加到文件，但不作为错误行）。
+- 忽略规则（`--log-ignore-keywords`）命中的行**不标注红色**（不作为错误行，不触发落盘）；
+- 容器异常退出（exit code != 0）但日志未命中关键字：**仍把缓冲日志落盘保留现场**（走独立短超时 ctx 非 Follow 拉取），并附带告警。
 
 ```
 [2026-08-15T10:00:00+08:00] [container=app] INFO starting server :8080
@@ -244,8 +245,9 @@ flowchart LR
 
 ### 4.3 增量追加写机制（O_APPEND，新旧错误共存）
 
-- 日志流开启后，`rec.TrackLog` 对采集到的**每一行**（不论是否命中关键字）通过 `appendFile`（`O_CREATE|O_APPEND|O_WRONLY`）**追加写入** `namespace-podname-date.log`，错误行标红；
-- 同 Pod 后续新日志按时间顺序持续追加到同一文件，历史错误与新错误**同时保存在同一文件中**，无需重复拉取；
+- 日志流开启后，`rec.TrackLog` 对采集到的行先**内存缓冲**；**首次命中错误关键字**时通过 `appendFile`（`O_CREATE|O_APPEND|O_WRONLY`）打开 `namespace-podname-date.log`，将缓冲的「启动到报错」日志一次性写入，错误行标红；
+- 文件打开后，同 Pod 后续新日志按时间顺序**持续增量追加**到同一文件，多次命中错误均增量更新，历史错误与新错误**同时保存在同一文件中**，无需重复拉取；
+- 未命中错误且容器未报错退出：**不打开文件、不落盘**（正常应用无日志文件产生）。
 - 追加写失败仅记录 warning，不影响主流程判定；日志流结束/窗口到期时 flush 后关闭文件。
 
 ### 4.4 与飞书告警联动

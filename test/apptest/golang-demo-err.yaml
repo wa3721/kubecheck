@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app-golang
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: golang-demo-err
+  namespace: app-golang
+  labels:
+    app: golang-demo-err
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: golang-demo-err
+  template:
+    metadata:
+      labels:
+        app: golang-demo-err
+    spec:
+      containers:
+        - name: golang-demo-err
+          image: demo-golang:1.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "golang-demo-err: fatal: listen tcp :8080: bind: address already in use" >&2
+              sleep 5
+              exit 1
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi

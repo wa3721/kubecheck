@@ -9,6 +9,8 @@ type Options struct {
 	ResourceType string
 	ResourceName string
 
+	AllNamespaces bool // -A/--all-namespaces：监听所有命名空间的 Deployment，发生更新时自动检查（常驻模式）
+
 	// 三段独立超时（秒级），彼此互不影响，无整体超时控制
 	DeployReadyTimeoutSec int // 第一层：Deployment 就绪超时
 	PodReadyTimeoutSec    int // 第二层：Pod 状态就绪超时

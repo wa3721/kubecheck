@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 export PATH=$PATH:/usr/local/go/bin
-cd /root/flow/flow
+cd /root/kubecheck
 export GOPROXY=https://goproxy.cn,direct
 export GOFLAGS=-mod=mod
 

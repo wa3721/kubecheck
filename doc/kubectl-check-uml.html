@@ -196,7 +196,7 @@ sequenceDiagram
             loop 实时日志流读取（--log-check-timeout）
                 K8S-->>CHK: 日志行
                 CHK->>LR: TrackLog（命中错误关键字 → errorHit）
-                LR->>FS: 逐行增量追加落盘，错误行 ANSI 红色标注
+                LR->>FS: 命中错误关键字才落盘（先缓冲「启动到报错」，后增量追加），错误行 ANSI 红色标注
             end
             par 退出检测（1s ticker）
                 CHK->>K8S: containerExitCode / totalRestartCount
@@ -234,7 +234,7 @@ stateDiagram-v2
     Monitoring --> PodNotReady : Pod 未进入 Running / 容器退出 / 重启超限
     Monitoring --> LogHit : Pod 就绪且存活但日志命中错误
     PodNotReady --> [*] : 发送告警（EventPodStatus/ContainerExit/RestartLimit）, exit=3
-    LogHit --> NotifyCheck : 日志窗口结束（日志已全程增量落盘）
+    LogHit --> NotifyCheck : 日志窗口结束（命中错误日志已落盘）
     NotifyCheck --> [*] : 发送「需要检查」提醒 (非阻塞), exit=0
     PodReady --> [*] : 无错误日志, exit=0
     Monitoring --> [*] : 收到中断信号<br/>发送 EventInterrupted 告警, exit=130
@@ -326,8 +326,8 @@ stateDiagram-v2
     <li><strong>第一级 Deployment 就绪超时直接中断</strong>：informer 事件驱动 + <code>rolloutComplete</code> 四条件判定；超时未就绪发送告警（优先飞书 / 降级控制台）后，以退出码 2 直接退出，不再进入第二级 Pod 检查。</li>
     <li><strong>第二级为轮询实现</strong>：Pod 侧不使用 informer，<code>waitForTargetPods</code> / <code>waitPodRunning</code> / 退出检测均为 1s 间隔 List/Get 轮询；仅第一级 Deployment 使用 informer 事件驱动。</li>
     <li><strong>优先级：Pod 异常 &gt; 日志告警</strong>：场景2（Pod 未进入 Running / 容器退出 / 重启超限）→ 告警 + 异常退出 code=3；即便同时命中错误日志也按场景2。</li>
-    <li><strong>场景3：Pod 就绪且存活但日志命中错误</strong>：日志全程增量落盘（错误行红色标注），日志窗口结束后发送「需要检查」提醒，<strong>不退出</strong>（code=0，非阻塞）。</li>
-    <li><strong>Follow 实时流增量追加写（O_APPEND）</strong>：文件恒保存日志流采集到的全部日志（非仅错误行）；同 Pod 新日志按时间顺序持续追加，<strong>新旧错误共存于同一文件</strong>，无需重复拉取。</li>
+    <li><strong>场景3：Pod 就绪且存活但日志命中错误</strong>：命中错误日志已落盘（错误行红色标注），日志窗口结束后发送「需要检查」提醒，<strong>不退出</strong>（code=0，非阻塞）。</li>
+    <li><strong>命中错误关键字才落盘（先缓冲后增量追加，O_APPEND）</strong>：未命中错误前内存缓冲（环形缓冲，容量随 --log-tail 放大），首次命中错误时打开文件写入「启动到报错」日志，此后增量追加；未命中错误且未报错退出的正常应用<strong>不产生日志文件</strong>；容器异常退出也落盘保留现场。</li>
     <li><strong>错误行红色标注</strong>：命中 <code>--log-err-keywords</code> 的行以 ANSI <code>\x1b[31m...\x1b[0m</code> 标红；忽略行不标红。</li>
     <li><strong>告警非阻塞</strong>：飞书发送独立 goroutine + 短超时，失败仅 warning，不影响主流程判定与退出码。</li>
     <li><strong>未配置 Webhook 降级控制台</strong>：<code>--feishu-webhook</code> 为空时，所有告警事件降级为控制台直接打印（带去重），不静默丢弃；退出码与判定逻辑不变。</li>

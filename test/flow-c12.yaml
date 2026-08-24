@@ -1,0 +1,32 @@
+# 测试用例 c12：recorder 无错误关键字 -> 缓冲但不落盘
+# 覆盖代码：recorder.TrackLog 中命中判定——行未命中任何 --log-error-keyword 时仅进入环形缓冲，
+#           由于整个追踪期均未命中错误，收尾时缓冲非空但无异常退出，不产生日志文件。
+# 场景：容器持续输出 INFO/WARN 级别日志（不含错误关键字），全部进入缓冲后丢弃。
+#       验证正常应用在启用日志检查时也不会产生落盘文件。
+# 运行：
+#   kubectl-check deployment/flow-c12 -n flowtest \
+#     --log-error-dir /tmp/flowlogs --log-error-keyword ERROR FATAL \
+#     --deploy-ready-timeout 60 --pod-ready-timeout 30 --log-check-timeout 12
+# 期望：exit 0；/tmp/flowlogs 下不产生 flowtest-flow-c12-*.log 文件。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flow-c12
+  namespace: flowtest
+  labels:
+    app: flow-c12
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flow-c12
+  template:
+    metadata:
+      labels:
+        app: flow-c12
+    spec:
+      containers:
+        - name: flow-c12
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args: ["while true; do echo '[INFO] request processed'; echo '[WARN] latency slightly high'; sleep 2; done"]
