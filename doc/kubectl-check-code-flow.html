@@ -83,9 +83,10 @@
     <p>
       <span class="badge">基于当前代码实际实现</span>
       <span class="badge green">Go + cobra + client-go</span>
-      <span class="badge blue">两级独立检查 · 无整体超时</span>
-      <span class="badge orange">飞书告警 + 控制台降级</span>
-      生成时间：2026-08-17 ｜ 与 <code>kubectl-check-uml.html</code>（设计文档版）对照使用
+      <span class="badge blue">三阶段独立检查 · 无整体超时</span>
+      <span class="badge orange">LLM 日志仲裁（--llm-enable 开启，默认关闭）</span>
+      <span class="badge red">飞书告警 + 控制台降级</span>
+      生成时间：2026-09-03 ｜ 与 <code>kubectl-check-uml.html</code>（设计文档版）对照使用
     </p>
   </header>
 
@@ -93,7 +94,7 @@
     <a href="#s1">1 模块依赖</a>
     <a href="#s2">2 主流程编排</a>
     <a href="#s3">3 单 Pod 并行追踪</a>
-    <a href="#s4">4 日志监控链路</a>
+    <a href="#s4">4 日志监控与 LLM 仲裁</a>
     <a href="#s5">5 告警链路</a>
     <a href="#s6">6 状态机</a>
     <a href="#s7">7 退出码</a>
@@ -104,36 +105,39 @@
   <!-- ============ 1 模块依赖 ============ -->
   <section id="s1">
     <h2><span class="num">1</span>包 / 模块依赖结构</h2>
-    <p class="sub">main 入口 → cmd 命令行层 → checker 核心编排 → {options 参数 / feishu 告警 / recorder 日志落盘}，各包依赖方向与代码 import 一致。</p>
+    <p class="sub">main 入口 → cmd 命令行层 → checker 核心编排 → {options 参数 / llm 仲裁 / recorder 日志落盘 / feishu 告警}，各包依赖方向与代码 import 一致。</p>
     <div class="mermaid">
 flowchart TD
     subgraph App["cmd 入口"]
         M["main.go<br/>main() → cmd.Execute()"]
     end
     subgraph CmdL["internal/cmd · 命令行层"]
-        NC["NewCheckCommand()<br/>构建 *cobra.Command（全部 flags）"]
-        PA["parseArgs()<br/>解析 deployment/name 与 deployment name<br/>格式/类型/超时/负数校验"]
+        NC["NewCheckCommand()<br/>构建 *cobra.Command（全部 flags<br/>含 --llm-* / --keyword-check 默认关闭）"]
+        PA["parseArgs()<br/>解析 deployment/name<br/>格式/类型/超时/负数校验"]
         RU["run()<br/>signal.Notify + goroutine → Interrupt()<br/>buildClient() → Checker.Run(ctx) → os.Exit(code)"]
         BC["buildClient()<br/>clientcmd 加载 kubeconfig → Clientset"]
         EX["Execute()<br/>命令错误统一 os.Exit(1)"]
     end
-    subgraph CoreL["internal/checker · 核心编排（util.go 已并入本包）"]
-        CNew["New(opts, cs)<br/>Checker + informerFactory"]
-        CGRun["Run(ctx) → exitCode<br/>两级独立检查编排"]
-        C1["waitDeploymentReady<br/>第一级 Deployment 就绪"]
-        C2["waitForTargetPods<br/>第二级前置：定位目标 Pod"]
+    subgraph CoreL["internal/checker · 核心编排"]
+        CNew["New(opts, cs)<br/>Checker + feishu + recorder + judge"]
+        CGRun["Run(ctx) → exitCode<br/>目标定位+两阶段编排"]
+        C1["locateTargetPods / listTargetPods<br/>目标定位（轮询等待最新 RS Pod 出现）"]
         C3["watchPods → trackPod<br/>逐 Pod goroutine 并行"]
-        C4["waitPodRunning<br/>阶段2：Pod 状态 1s 轮询"]
+        C4["waitFirstRunning/waitReady<br/>阶段2：等 Running + 就绪 1s 轮询"]
         C5["watchPodLog<br/>阶段3：日志观察 + 退出检测"]
-        CU["checker.go 内部辅助<br/>rolloutComplete / listTargetPods<br/>totalRestartCount / waitLogFlush 等"]
+        CU["checker.go 内部辅助<br/>newestReplicaSet / ownerMatches<br/>podReady / totalRestartCount / waitLogFlush 等"]
         AL["alert()<br/>统一告警出口"]
     end
     subgraph OptL["internal/options"]
-        OP["Options 结构体<br/>三段超时 / 关键字 / 落盘目录 / 飞书 / 开关"]
+        OP["Options 结构体<br/>两段超时 / 关键字 / LLM 参数<br/>/ 落盘目录 / 飞书 / 开关"]
+    end
+    subgraph LLML["internal/llm"]
+        LJ["Client<br/>Enabled / Timeout / Judge<br/>OpenAI 兼容 chat completions"]
     end
     subgraph RecL["internal/recorder"]
-        RT["TrackLog（Follow 实时流<br/>逐行增量追加落盘）"]
-        RC["colorizeErrorLine 标红<br/>appendFile / FilePath 命名"]
+        RT["TrackLog（双路径分发）<br/>trackLogKeyword（关键字即真）<br/>trackLogWithJudge（LLM 仲裁）"]
+        RS["snapshotFull<br/>SinceTime 全量快照覆盖写"]
+        RC["colorizeErrorLine 标红<br/>truncFile / appendFile / 命名"]
     end
     subgraph FSL["internal/feishu"]
         FS["Send / printConsole（降级）"]
@@ -145,7 +149,6 @@ flowchart TD
     RU --> BC
     RU --> CNew --> CGRun
     CGRun --> C1
-    CGRun --> C2
     CGRun --> C3
     C3 --> C4
     C3 --> C5
@@ -158,7 +161,10 @@ flowchart TD
     FS --> FP
     FS --> FD
     C5 --> RT
+    RT --> RS
     RT --> RC
+    RT --> LJ
+    CNew --> LJ
     CNew --> OP
     CGRun --> OP
     </div>
@@ -166,89 +172,118 @@ flowchart TD
 
   <!-- ============ 2 主流程编排 ============ -->
   <section id="s2">
-    <h2><span class="num">2</span>主流程编排（两级独立检查）</h2>
-    <p class="sub">两级之间无整体超时：第一级超时直接退出（code=2）不再进入第二级；<code>--check-pod-status=false</code> 时仅检查 Deployment 即通过。虚线为告警旁路，不阻塞主流程。</p>
+    <h2><span class="num">2</span>主流程编排（目标定位 + 两阶段独立检查）</h2>
+    <p class="sub">两段超时彼此独立、无整体超时；目标定位在 <code>--pod-ready-timeout</code> 窗口内轮询等待目标 Pod 出现（不校验 Deployment 超时与滚动状态，覆盖"发布刚触发、新 RS 已创建但 Pod 尚未创建"的竞态窗口），<code>replicas=0</code> 无目标可等或窗口内未出现直接退出（code=2）不再进入后续阶段；<code>--check-pod-status=false</code> 时目标定位完成即通过。虚线为告警旁路，不阻塞主流程。</p>
     <div class="mermaid">
 flowchart TD
-    START(["main → cmd.Execute()"]) --> PA{"parseArgs 校验<br/>格式 / 仅支持 deployment / 非负超时"}
+    START(["main → cmd.Execute()"]) --> PA{"parseArgs 校验<br/>格式 / 仅支持 deployment / 非负超时<br/>启用仲裁时 llm-timeout > 0"}
     PA -->|"非法"| E1["输出错误"] --> X1[("退出 code=1")]
-    PA -->|"合法"| RU["run()：signalCtx + buildClient"]
+    PA -->|"合法"| RU["run()：signalCtx + buildClient<br/>+ llm.New（--llm-enable 开启时, 默认端点智谱 GLM）"]
     RU -->|"客户端构建失败"| E1
-    RU --> STAGE1["第一级 waitDeploymentReady<br/>informer 事件 + 首次缓存同步补查<br/>2s ticker（仅 verbose 打印）<br/>超时窗口 --deploy-ready-timeout（≤0 禁用）"]
-    STAGE1 --> DQ{"rolloutComplete?<br/>observedGeneration>=generation<br/>且 replicas/updatedReplicas/readyReplicas<br/>均 == spec.replicas"}
-    DQ -->|"超时未就绪"| ALD["alert(EventDeployTimeout)<br/>飞书/控制台"]
-    ALD --> X2[("退出 code=2<br/>不进入第二级")]
-    DQ -->|"就绪"| PG{"--check-pod-status<br/>开启?"}
-    PG -->|"否"| OK1["INFO：仅检查 Deployment"] --> X0a[("退出 code=0")]
-    PG -->|"是"| WAITPODS["第二级前置 waitForTargetPods<br/>--pod-ready-timeout 窗口内 1s 轮询<br/>Deployment→RS(最大 revision)→Pod<br/>过滤 Terminating"]
-    WAITPODS --> HP{"找到目标 Pod?"}
-    HP -->|"查询失败"| X1b[("退出 code=1")]
-    HP -->|"超时仍无 Pod"| ALN["alert(EventPodStatus)<br/>未产生任何 Pod"] --> X3a[("退出 code=3")]
-    HP -->|"命中"| STAGE2["第二级 watchPods<br/>逐 Pod goroutine：阶段2 状态轮询<br/>→ 阶段3 日志观察<br/>聚合优先级：Pod 异常 &gt; 日志告警"]
+    RU --> LOC["目标定位 locateTargetPods<br/>replicas=0 立即无目标; 否则 pod-ready-timeout 窗口内<br/>1s 轮询 listTargetPods 等待目标 Pod 出现<br/>（过滤 Terminating；不校验 Deployment 状态）"]
+    LOC -->|"replicas=0 或窗口内未出现"| ALD["alert(EventNoTargetPod)<br/>未找到目标 Pod"]
+    ALD --> X2[("退出 code=2<br/>不进入阶段2/3")]
+    LOC -->|"目标 Pod 出现（Pending 即算）"| PG{"--check-pod-status<br/>开启?"}
+    PG -->|"否"| OK1["INFO：目标定位完成"] --> X0a[("退出 code=0")]
+    PG -->|"是"| STAGE2["阶段2+3 watchPods<br/>逐 Pod goroutine：阶段2 就绪轮询<br/>→ 阶段3 日志观察（LLM 仲裁）<br/>聚合优先级：Pod 异常 &gt; 日志告警"]
     STAGE2 --> AG{"聚合判定<br/>hasPodFailure / hasWarning"}
-    AG -->|"场景2 任一 Pod 失败（未 Running /<br/>容器退出 / 重启超限）"| ALP["alert(EventContainerExit /<br/>EventRestartLimit / EventPodStatus)"] --> X3b[("退出 code=3")]
-    AG -->|"场景3 全就绪但有错误日志"| FIN["日志已全程增量落盘<br/>+ alert(EventPendingCheck) 非阻塞提醒"] --> X0b[("退出 code=0")]
-    AG -->|"场景1 全就绪且无错误日志"| OK2["INFO 汇总输出"] --> X0c[("退出 code=0")]
+    AG -->|"场景2 任一 Pod 失败（未就绪 /<br/>容器退出 / 重启超限）<br/>异常告警已在失败路径即时发送"| X3b[("退出 code=3<br/>聚合处不重复告警")]
+    AG -->|"场景3 全就绪但有真错误日志"| FIN["alert(EventPendingCheck) 非阻塞提醒<br/>（--log-dump 开启时 SinceTime 全量落盘）"] --> X0b[("退出 code=0")]
+    AG -->|"场景1 全就绪且无真错误"| OK2["INFO 汇总输出"] --> X0c[("退出 code=0")]
     </div>
   </section>
 
   <!-- ============ 3 单 Pod 并行追踪 ============ -->
   <section id="s3">
     <h2><span class="num">3</span>单 Pod 并行追踪（trackPod 内部）</h2>
-    <p class="sub">阶段2 <code>waitPodRunning</code> 进入 Running 后才启动阶段3 <code>watchPodLog</code>（串行）；watchPodLog 内部「日志流」与「退出检测」两路并行，各自独立超时。<code>--log-enable=false</code> 时跳过阶段3。</p>
+    <p class="sub">Pod 首次进入 Running 时即启动阶段3 <code>watchPodLog</code>（与阶段2 的 Ready 等待<b>并行</b>：有探针时 0/1 Running 期间两阶段共同作用，任一终态经 podCtx 联动取消另一路）；watchPodLog 内部「日志流」与「退出检测」两路并行，各自独立超时。controller 删除中的 Pod（surge 缩容/回滚）静默跳过不计异常。<code>--log-enable=false</code> 或 <code>--log-check-timeout=0</code> 时跳过阶段3。</p>
     <div class="mermaid">
 flowchart LR
-    TP(["trackPod(ctx, pod)<br/>阶段2 就绪 → 阶段3 日志观察"])
-    subgraph W["阶段2 · waitPodRunning · 状态轮询"]
+    TP(["trackPod(ctx, pod)<br/>podCtx 联动取消"])
+    FR["waitFirstRunning：等首次 Running<br/>（Pending/Init 占用同一预算）<br/>→ 锚点 runningAt"]
+    subgraph W["阶段2 · waitReady · 就绪轮询（并行路 A）"]
         W0["每次 Get 最新状态<br/>1s ticker 轮询"]
         W1["context.WithTimeout<br/>--pod-ready-timeout（每 Pod 独立）"]
-        W2["就绪判定：仅需<br/>Status.Phase == Running"]
+        W2["就绪判定：podReady<br/>PodReady 条件 == True<br/>（含探针校验，无探针 Running 即就绪）"]
+        W3["removed 豁免：<br/>NotFound / DeletionTimestamp<br/>→ 静默跳过（非异常）"]
     end
-    subgraph L["阶段3 · watchPodLog · 日志观察（两路并行）"]
+    subgraph L["阶段3 · watchPodLog · 日志观察（并行路 B，两路并行）"]
         L0["--log-enable=false<br/>或 --log-check-timeout≤0 → 直接返回"]
-        L1["remaining = --log-check-timeout<br/>- 已耗时；context.WithTimeout"]
-        L2["日志流：rec.TrackLog<br/>Follow 实时流逐行增量落盘<br/>命中错误关键字 → errorHit"]
-        L3["退出检测：1s ticker<br/>containerExitCode / totalRestartCount"]
+        L1["remaining = --log-check-timeout<br/>- since(首次 Running 时刻)"]
+        L2["日志流：rec.TrackLog<br/>命中行 → LLM 仲裁 / 关键字判定"]
+        L3["退出检测：1s ticker<br/>containerExitCode / totalRestartCount<br/>删除中 Pod 豁免"]
     end
     subgraph M["聚合与场景判定"]
-        M1["errorHit / exitCode / restartExceed 汇聚"]
+        M1["errorHit（存在真错误）/ exitCode / restartExceed 汇聚"]
         M2["日志窗口结束 && errorHit<br/>→ setWarning + alert(EventPendingCheck)"]
-        M3["exit code!=0 → alert(EventContainerExit)<br/>重启超限 → alert(EventRestartLimit)<br/>+ waitLogFlush 落盘收尾 → code=3"]
+        M3["exit code!=0 → alert(EventContainerExit)<br/>重启超限 → alert(EventRestartLimit)<br/>+ waitLogFlush 落盘收尾（--log-dump）→ code=3"]
     end
-    TP --> W
+    TP --> FR
+    FR -->|"首次 Running"| PAR["并行启动 A + B<br/>（podCtx 联动：任一终态取消另一路）"]
+    PAR --> W
+    PAR --> L
     W --> W0 --> W1 --> W2
-    W2 -->|"进入 Running"| L
-    W2 -->|"超时"| MT["setPodFailure + alert(EventPodStatus)<br/>code=3"]
+    W2 -->|"removed"| W3
+    W2 -->|"超时（取消阶段3）"| MT["setPodFailure + alert(EventPodStatus)<br/>「未就绪（Ready 超时）」 code=3"]
+    W2 -->|"就绪"| WAIT["阶段2 结束<br/>阶段3 继续至窗口结束"]
     L --> L0
     L0 --> L1 --> L2
     L1 --> L3
     L2 --> M1
     L3 -->|"正常（窗口内无异常退出）"| M1
-    L3 -->|"容器退出/重启超限"| M3
+    L3 -->|"容器退出/重启超限（取消阶段2）"| M3
     M1 --> M2
     M2 --> FIN2["非阻塞，code=0"]
     </div>
   </section>
 
-  <!-- ============ 4 日志监控链路 ============ -->
+  <!-- ============ 4 日志监控与 LLM 仲裁 ============ -->
   <section id="s4">
-    <h2><span class="num">4</span>日志监控链路（internal/recorder）</h2>
-    <p class="sub">单一路径：TrackLog 以 Follow 实时流逐行增量追加落盘（O_APPEND），错误行标红；无 SinceTime 快照拉取、无目录收尾扫描。</p>
+    <h2><span class="num">4</span>日志监控与 LLM 仲裁链路（internal/recorder + internal/llm）</h2>
+    <p class="sub">TrackLog 按 judge 是否启用分发双路径（落盘均受 <code>--log-dump</code> 开关控制，默认关闭，检测/errorHit 判定不受影响）：<b>LLM 仲裁（默认）</b>——命中行进 pod 级 channel 异步判定，真错误才 SinceTime 全量快照覆盖写；<b>关键字路径（--llm-endpoint="" 禁用）</b>——现行 Follow 流 + 环形缓冲 + 首次命中落盘 + 增量追加。</p>
     <div class="mermaid">
 flowchart TD
-    subgraph Live["TrackLog（Follow=true）逐行增量落盘"]
+    subgraph Common["公共流式采集"]
         LT1["waitForContainerRunning<br/>1s 轮询等待任一容器 Running"]
-        LT2["对每个 Running 容器 GetLogs<br/>Container + TailLines=--log-tail<br/>+ Timestamps + Follow"]
+        LT2["对每个已启动容器 GetLogs<br/>Container + TailLines=--log-tail<br/>+ Timestamps + Follow<br/>（已退出容器降级非 Follow 短超时拉取）"]
         LT3["逐行判定<br/>hitAny(错误关键字) && !hitIgnore(忽略关键字)"]
-        LT4["命中 → errorHit=true（该行标红）"]
-        LT5["colorizeErrorLine<br/>[时间戳] [container=xx] 前缀 + ANSI 标红"]
-        LT6["appendFile 逐行增量追加<br/>O_CREATE|O_APPEND|O_WRONLY"]
     end
-    subgraph F["落盘文件"]
-        F1["{--log-error-dir}/<br/>{namespace}-{podName}-{date}.log<br/>date=20060102"]
+    subgraph Arb["LLM 仲裁路径（--llm-enable 开启，默认关闭）"]
+        A1["命中行 → pod 级有界 channel<br/>容量 256，满则丢弃计数"]
+        A2["仲裁 goroutine：<br/>攒批 10 行 / 2s + 相同行去重"]
+        A3["llm.Client.Judge 批量判定<br/>单批 ≤20 行自动拆分<br/>非流式 temperature=0"]
+        A4{"判定结果"}
+        A5["任一真错误<br/>→ snapshotFull 全量快照<br/>+ errorHit=true"]
+        A6["全部假错误<br/>→ 不落盘不告警"]
+        A7["调用失败 → allTrue 降级<br/>连续 3 次失败 arbBreaker 熔断"]
     end
-    LT1 --> LT2 --> LT3 --> LT4 --> LT5 --> LT6
-    LT6 --> F1
+    subgraph Kw["关键字路径（--llm-endpoint='' 禁用）"]
+        K1["命中行 → 内存环形缓冲<br/>容量 max(tail×10, 1000)"]
+        K2["首次命中 flushBuf：<br/>缓冲 + 命中行落盘（O_APPEND）<br/>（--log-dump 开启时）"]
+        K3["此后逐行增量追加"]
+    end
+    subgraph Snap["snapshotFull 全量快照"]
+        S1["containerStartTime 取起点：<br/>Running.StartedAt / LastTermination<br/>/ 回退创建时间（多容器取最早）"]
+        S2["逐容器 GetLogs(SinceTime, Timestamps)<br/>首容器 O_TRUNC 后续追加"]
+    end
+    subgraph F["落盘文件（--log-dump 开启）"]
+        F1["{--log-error-dir}/<br/>{namespace}-{podName}-{date}.log"]
+    end
+    subgraph Exit["容器异常退出兜底（两路径共用，不经 LLM）"]
+        E2["未命中真错误但容器 Terminated 且 exit!=0<br/>→ 无条件快照保留现场（不计 errorHit，--log-dump 开启时）"]
+    end
+    LT1 --> LT2 --> LT3
+    LT3 -->|"judge 启用"| A1
+    LT3 -->|"judge 禁用"| K1
+    A1 --> A2 --> A3 --> A4
+    A4 -->|"真"| A5 --> S1
+    A4 -->|"全假"| A6
+    A4 -->|"失败"| A7 --> A5
+    K1 --> K2 --> K3
+    S1 --> S2 --> F1
+    K3 --> F1
+    LT2 -.->|"全部容器流结束"| Exit
+    Exit --> S1
     </div>
   </section>
 
@@ -273,10 +308,10 @@ flowchart TD
     <p class="sub" style="margin-top:10px">事件类型使用情况（feishu.go 中定义的全部 6 个常量）：</p>
     <table>
       <tr><th>事件常量</th><th>触发位置（checker）</th><th>header 颜色</th><th>状态</th></tr>
-      <tr><td><code>EventDeployTimeout</code></td><td>waitDeploymentReady 超时（rolloutComplete 未满足）</td><td>red</td><td><span class="tag used">已使用</span></td></tr>
-      <tr><td><code>EventPodStatus</code></td><td>无 Pod / Pod 未进入 Running 超时</td><td>red</td><td><span class="tag used">已使用</span></td></tr>
-      <tr><td><code>EventPendingCheck</code></td><td>就绪且存活但命中错误日志（窗口结束提醒）</td><td>orange</td><td><span class="tag used">已使用</span></td></tr>
-      <tr><td><code>EventContainerExit</code></td><td>容器 Terminated 且 exit code != 0（alertPodExit）</td><td>red</td><td><span class="tag used">已使用</span></td></tr>
+      <tr><td><code>EventNoTargetPod</code></td><td>目标定位未找到目标 Pod（replicas=0 无目标可等，或 pod-ready-timeout 窗口内目标 Pod 未出现）</td><td>red</td><td><span class="tag used">已使用</span></td></tr>
+      <tr><td><code>EventPodStatus</code></td><td>Pod 未就绪（Ready 超时）</td><td>red</td><td><span class="tag used">已使用</span></td></tr>
+      <tr><td><code>EventPendingCheck</code></td><td>就绪且存活但存在真错误日志（窗口结束提醒）</td><td>orange</td><td><span class="tag used">已使用</span></td></tr>
+      <tr><td><code>EventContainerExit</code></td><td>容器 Terminated 且 exit code != 0（alertPodExit，删除中 Pod 豁免）</td><td>red</td><td><span class="tag used">已使用</span></td></tr>
       <tr><td><code>EventRestartLimit</code></td><td>容器 restartCount 超 --max-restart（alertPodExit code&lt;0）</td><td>red</td><td><span class="tag used">已使用</span></td></tr>
       <tr><td><code>EventInterrupted</code></td><td>SIGINT/SIGTERM 中断（Interrupt()）</td><td>red</td><td><span class="tag used">已使用</span></td></tr>
     </table>
@@ -288,24 +323,20 @@ flowchart TD
     <div class="mermaid">
 stateDiagram-v2
     [*] --> Parsing: cobra Execute / parseArgs
-    Parsing --> Running: 参数合法
+    Parsing --> Locating: 参数合法
     Parsing --> [*]: 参数非法（code=1）
-    Running --> Stage1: buildClient 成功
-    Running --> [*]: 构建失败（code=1）
-    Stage1 --> DeployReady: rolloutComplete 命中
-    Stage1 --> [*]: 就绪超时（alert 后 code=2）
-    DeployReady --> WaitPod: --check-pod-status 开启
-    DeployReady --> [*]: 关闭 Pod 追踪（code=0）
-    WaitPod --> Parallel: 发现目标 Pod
-    WaitPod --> [*]: 无 Pod（alert 后 code=3）
-    Parallel --> S1: 全就绪且无错误日志（code=0）
-    Parallel --> S2: 未进入 Running / 容器退出 / 重启超限（alert 后 code=3）
-    Parallel --> S3: 就绪且存活但有错误日志
+    Locating --> Located: 目标 Pod 出现（轮询等待，Pending 即算）
+    Locating --> [*]: replicas=0 / 窗口超时（alert 后 code=2）
+    Located --> Tracking: --check-pod-status 开启
+    Located --> [*]: 关闭 Pod 追踪（code=0）
+    Tracking --> S1: 全就绪且无真错误日志（code=0）
+    Tracking --> S2: 未就绪 / 容器退出 / 重启超限（alert 后 code=3）
+    Tracking --> S3: 就绪且存活但存在真错误日志
     S3 --> Notify: 日志窗口结束 alert(EventPendingCheck)
     Notify --> [*]: code=0（提示非阻塞）
     S1 --> [*]
     S2 --> [*]
-    Parallel --> [*]: 中断（alert(EventInterrupted) 后 code=130）
+    Tracking --> [*]: 中断（alert(EventInterrupted) 后 code=130）
     </div>
   </section>
 
@@ -314,10 +345,10 @@ stateDiagram-v2
     <h2><span class="num">7</span>退出码约定</h2>
     <table>
       <tr><th>Code</th><th>含义</th><th>触发路径（对应代码）</th></tr>
-      <tr><td><code>0</code></td><td>成功</td><td>Deployment 就绪 + Pod 全就绪无错误日志（场景1）；或就绪且存活但存在错误日志（场景3，已提醒）；或 --check-pod-status=false</td></tr>
-      <tr><td><code>1</code></td><td>参数 / 环境错误</td><td>parseArgs 非法、buildClient 失败、waitForTargetPods 查询失败、cobra RunE 返回错误</td></tr>
-      <tr><td><code>2</code></td><td>Deployment 就绪超时</td><td>waitDeploymentReady 在 --deploy-ready-timeout 内 rolloutComplete 未满足（已发 EventDeployTimeout 告警，不进入第二级）</td></tr>
-      <tr><td><code>3</code></td><td>Pod 异常</td><td>waitForTargetPods 超时无 Pod，或任一 Pod 未进入 Running / 容器异常退出 / 重启次数超限（已发对应告警 EventPodStatus / EventContainerExit / EventRestartLimit）</td></tr>
+      <tr><td><code>0</code></td><td>成功</td><td>目标 Pod 全就绪且无真错误日志（场景1）；或就绪且存活但存在真错误日志（场景3，已提醒；--log-dump 开启时已全量落盘）；或 --check-pod-status=false（目标定位完成即通过）</td></tr>
+      <tr><td><code>1</code></td><td>参数 / 环境错误</td><td>parseArgs 非法、buildClient 失败、listTargetPods 资源查询失败、cobra RunE 返回错误</td></tr>
+      <tr><td><code>2</code></td><td>未找到目标 Pod</td><td>目标定位 locateTargetPods 未找到目标 Pod（replicas=0 无目标可等，或 pod-ready-timeout 窗口内目标 Pod 未出现；已发 EventNoTargetPod 告警，不进入阶段2/3）</td></tr>
+      <tr><td><code>3</code></td><td>Pod 异常</td><td>任一 Pod 未就绪（Ready 超时）/ 容器异常退出 / 重启次数超限（已发对应告警 EventPodStatus / EventContainerExit / EventRestartLimit）</td></tr>
       <tr><td><code>130</code></td><td>用户中断</td><td>SIGINT / SIGTERM 触发 signal goroutine → Interrupt()：取消上下文 → 等待收尾 → 发送 EventInterrupted 告警后退出（与 shell 约定一致）</td></tr>
     </table>
   </section>
@@ -328,12 +359,14 @@ stateDiagram-v2
     <table>
       <tr><th>文件</th><th>职责</th><th>关键函数</th></tr>
       <tr><td><code>main.go</code></td><td>程序入口</td><td>main()</td></tr>
-      <tr><td><code>internal/cmd/cmd.go</code></td><td>cobra 命令、参数解析校验、主流程编排</td><td>NewCheckCommand / parseArgs / run / buildClient / Execute</td></tr>
-      <tr><td><code>internal/options/options.go</code></td><td>全部 CLI 参数结构与秒→Duration 转换</td><td>Options 及 4 个 Duration() 方法</td></tr>
-      <tr><td><code>internal/checker/checker.go</code></td><td>两级检查核心：Deployment 就绪 → Pod 并行追踪 → 聚合退出</td><td>Run / waitDeploymentReady / waitForTargetPods / watchPods / trackPod / waitPodRunning / watchPodLog / Interrupt / alert（util.go 已并入本文件）</td></tr>
-      <tr><td><code>internal/recorder/recorder.go</code></td><td>日志实时跟踪与错误落盘</td><td>TrackLog / RecordedPath / FilePath / colorizeErrorLine / hitAny / hitIgnore / appendFile / waitForContainerRunning</td></tr>
-      <tr><td><code>internal/feishu/feishu.go</code></td><td>飞书告警客户端（非阻塞、去重、签名、卡片）</td><td>New / Enabled / Send / printConsole / dedup / post / buildPayload / signFeishu / headerTemplate</td></tr>
-      <tr><td>各包 <code>*_test.go</code></td><td>单元测试（feishu / recorder / checker / options / cmd）</td><td>—</td></tr>
+      <tr><td><code>internal/cmd/cmd.go</code></td><td>cobra 命令、参数解析校验（含 LLM 参数）、主流程编排</td><td>NewCheckCommand / parseArgs / run / buildClient / Execute</td></tr>
+      <tr><td><code>internal/options/options.go</code></td><td>全部 CLI 参数结构与秒→Duration 转换</td><td>Options 及 5 个 Duration() 方法</td></tr>
+      <tr><td><code>internal/checker/checker.go</code></td><td>核心编排：目标定位（等待 Pod 出现）→ 首次 Running 后并行（就绪等待 + 日志观察 LLM 仲裁）→ 聚合退出</td><td>Run / locateTargetPods / listTargetPods / newestReplicaSet / watchPods / trackPod / waitFirstRunning / waitReady / podReady / watchPodLog / Interrupt / alert</td></tr>
+      <tr><td><code>internal/llm/llm.go</code></td><td>OpenAI 兼容 LLM 仲裁客户端（默认端点智谱 GLM，标准库实现，--llm-enable 开启）</td><td>New / Enabled / Timeout / Judge / judgeBatch / parseJudgeContent</td></tr>
+      <tr><td><code>internal/recorder/recorder.go</code></td><td>日志实时跟踪与错误落盘（关键字路径 + LLM 仲裁路径）</td><td>TrackLog / trackLogKeyword / trackLogWithJudge / snapshotFull / containerStartTime / ErrorJudge 接口 / arbBreaker / RecordedPath / FilePath / colorizeErrorLine / truncFile / appendFile / waitForContainerRunning</td></tr>
+      <tr><td><code>internal/feishu/feishu.go</code></td><td>飞书告警客户端（非阻塞、去重、签名、卡片）</td><td>New / Enabled / Send / printConsole / dedup / post / buildPayload / signFeishu</td></tr>
+      <tr><td><code>internal/watcher/watcher.go</code></td><td>常驻监听模式（-A 全部 / -n 过滤，Deployment 创建或更新自动触发检查，存量抑制 + nsFilter 通配过滤）</td><td>New / Run / nsFilter / startCheck / triggerCreate / triggerUpdate / Interrupt</td></tr>
+      <tr><td>各包 <code>*_test.go</code></td><td>单元测试（llm / recorder / checker / options / cmd / feishu / watcher）</td><td>—</td></tr>
     </table>
   </section>
 
@@ -342,40 +375,40 @@ stateDiagram-v2
     <h2><span class="num">9</span>设计与实现关键差异（对照 kubectl-check-uml.html / SPEC）</h2>
     <p class="sub">以下为对照当前代码后确认的、以实际实现为准的差异点（设计文档按此同步修正）：</p>
     <table>
-      <tr><th>#</th><th>设计文档描述（旧）</th><th>当前代码实际行为</th></tr>
+      <tr><th>#</th><th>历史版本描述（旧）</th><th>当前代码实际行为</th></tr>
       <tr>
         <td>1</td>
-        <td>第一级就绪判定使用 <code>--for</code> 指定 Condition（默认 Available）</td>
-        <td>无 <code>--for</code> 参数；就绪判定为 <b>rolloutComplete 四条件</b>（observedGeneration/updatedReplicas/readyReplicas 与 spec.replicas 对齐）</td>
+        <td>阶段1 等待 Deployment 滚动收敛（rolloutComplete 四条件，informer 事件驱动），收敛通过后阶段2 等 Pod Running；后改为 lockTargetPods 三分支轮询</td>
+        <td>不再校验 Deployment 的超时与滚动状态，<b>目标定位 locateTargetPods 在 pod-ready-timeout 窗口内轮询等待</b>最新 revision RS 的目标 Pod 出现（含 Pending，覆盖"发布刚触发、新 RS 已创建但 Pod 尚未创建"的竞态窗口）后进入 Pod 层级校验；lockTargetPods/rolloutComplete 轮询已删除，<code>--deploy-ready-timeout</code> 参数已移除</td>
       </tr>
       <tr>
         <td>2</td>
-        <td>第二级 Pod 侧使用 informer 监听生命周期事件</td>
-        <td>Pod 侧<b>无 informer</b>：waitForTargetPods / waitPodRunning / 退出检测均为 1s 轮询 Get；仅第一级 Deployment 使用 informer</td>
+        <td>阶段2 判定为 <code>Status.Phase == Running</code></td>
+        <td>升级为 <b>waitFirstRunning + waitReady</b>：PodReady 条件 == True（等价 podutil.IsPodReady，含就绪探针校验；无探针容器 Running 即就绪），弥补旧阶段1 隐含的探针校验能力；阶段3 从首次 Running 启动（与阶段2 并行，podCtx 联动取消），日志窗口锚点为首次观察到 Running 的时刻</td>
       </tr>
       <tr>
         <td>3</td>
-        <td>waitPodReady 含 10s 稳定性复查；isPodReady 要求 restartCount==0</td>
-        <td><b>均已移除</b>：waitPodRunning 仅判断 <code>Status.Phase == Running</code>，无稳定窗口与重启次数前置要求</td>
+        <td>退出码 2 = 滚动收敛超时 / 目标锁定超时；「未产生任何 Pod」为独立告警路径（code=3）</td>
+        <td>退出码 2 = <b>未找到目标 Pod</b>（listTargetPods 返回空，如 replicas=0）；「未产生任何 Pod」路径并入该语义</td>
       </tr>
       <tr>
         <td>4</td>
-        <td>错误日志为「完整快照覆盖写」（SnapshotLogErrors / O_TRUNC / SinceTime 拉取）</td>
-        <td>改为 <b>Follow 实时流逐行增量追加写</b>（O_APPEND）：全程采集、错误行标红，无快照拉取</td>
+        <td>错误日志为 Follow 实时流逐行增量追加写（O_APPEND），--log-dump 开启时命中关键字即落盘</td>
+        <td>按 LLM 启用与否双路径：<b>默认（LLM 仲裁）</b>命中行经智谱 GLM 批量判定，真错误才 <b>SinceTime 全量快照覆盖写</b>（O_TRUNC）；<b>禁用（--llm-endpoint=""）</b>保持旧关键字即真 + 增量追加行为</td>
       </tr>
       <tr>
         <td>5</td>
-        <td>退出码含 4（日志错误根因）与 5（整体超时）；存在 --timeout / --stable-duration</td>
-        <td><b>无退出码 4/5</b>、无 --timeout / --stable-duration：三段独立超时，退出码仅 0/1/2/3/130；容器异常退出归入 3</td>
+        <td>无 LLM 能力；日志告警以关键字命中为准</td>
+        <td>新增 <b>internal/llm</b> 包（OpenAI 兼容，标准库实现，默认端点智谱 GLM/GLM-4-Flash-250414，后随 --llm-enable/--keyword-check 开关引入改为默认关闭）；调用失败降级关键字即真，<b>连续 3 次失败熔断</b>；warning 告警与落盘同门槛（仅真错误）</td>
       </tr>
       <tr>
         <td>6</td>
-        <td>中断（130）不发送告警</td>
-        <td>Interrupt() 会发送 <b>EventInterrupted</b> 告警后退出；事件常量共 6 个（含 EventContainerExit / EventInterrupted），无 EventLogRootCause / EventReadyTimeout / EventOverallTimeout</td>
+        <td>锁定/追踪期间 Pod 被删除（surge 缩容、回滚）会被计为异常</td>
+        <td>阶段2（NotFound / DeletionTimestamp → 静默跳过）与阶段3 退出检测（删除中 Pod 豁免）<b>双重防误报</b>：controller 删除的 Pod 不计为应用故障</td>
       </tr>
       <tr>
         <td>7</td>
-        <td>util.go（watchDeployment/deploymentReady/isPodReady 等）与 internal/finish 包存在</td>
+        <td>util.go 与 internal/finish 包存在</td>
         <td><b>util.go 与 finish 包均已删除</b>，逻辑并入 checker.go / cmd.go；无收尾目录扫描</td>
       </tr>
       <tr>
@@ -387,7 +420,7 @@ stateDiagram-v2
   </section>
 
   <footer>
-    kubectl-check 项目逻辑图 · 由代码静态分析生成（checker/recorder/feishu/cmd/options + main）<br>
+    kubectl-check 项目逻辑图 · 由代码静态分析生成（checker / llm / recorder / feishu / watcher / cmd / options + main）<br>
     对照文件：kubectl-check-uml.html（设计文档版）· kubectl-check-code-flow.html（本文件，代码实现版）
   </footer>
 </div>

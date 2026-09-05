@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>kubectl-check 用户手册</title>
+<style>
+  :root {
+    --bg: #f5f7fb; --card: #ffffff; --border: #e2e8f0; --text: #1e293b;
+    --muted: #64748b; --accent: #2563eb; --accent-dark: #1d4ed8;
+    --red: #dc2626; --red-bg: #fef2f2; --orange: #ea580c; --orange-bg: #fff7ed;
+    --green: #16a34a; --green-bg: #f0fdf4; --blue-bg: #eff6ff; --gray-bg: #f8fafc;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; scroll-padding-top: 56px; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); line-height: 1.75; }
+
+  header { background: linear-gradient(135deg, #0f172a, #1e293b 55%, #334155); color: #fff; padding: 44px 40px 36px; }
+  header .inner { max-width: 1180px; margin: 0 auto; }
+  header h1 { font-size: 28px; font-weight: 700; letter-spacing: .5px; }
+  header h1 .cmd { color: #7dd3fc; font-family: "Cascadia Code", Consolas, monospace; }
+  header p.sub { color: #cbd5e1; margin-top: 10px; font-size: 15px; max-width: 860px; }
+  header .meta { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; }
+  header .meta span { font-size: 12px; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.18); color: #e2e8f0; border-radius: 999px; padding: 3px 12px; }
+
+  nav { position: sticky; top: 0; background: #0f172a; z-index: 100; display: flex; gap: 2px; padding: 6px 40px; flex-wrap: wrap; box-shadow: 0 2px 8px rgba(15,23,42,.25); }
+  nav .inner { max-width: 1180px; margin: 0 auto; display: flex; gap: 2px; flex-wrap: wrap; }
+  nav a { color: #cbd5e1; text-decoration: none; padding: 6px 13px; border-radius: 6px; font-size: 13.5px; white-space: nowrap; }
+  nav a:hover { background: #334155; color: #fff; }
+
+  main { max-width: 1180px; margin: 0 auto; padding: 30px 40px 60px; }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 26px 30px; margin-bottom: 30px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+  .card > h2 { font-size: 21px; margin-bottom: 4px; color: #0f172a; display: flex; align-items: center; gap: 10px; }
+  .card > h2 .no { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 15px; font-weight: 700; }
+  .card > h2 .tag { display: inline-block; font-size: 12px; background: var(--blue-bg); color: var(--accent-dark); border-radius: 4px; padding: 2px 9px; font-weight: 600; }
+  .card > .desc { color: var(--muted); font-size: 14px; margin: 6px 0 18px; }
+  .card h3 { font-size: 16.5px; margin: 24px 0 10px; color: #1e3a8a; display: flex; align-items: center; gap: 8px; }
+  .card h3::before { content: ""; width: 4px; height: 16px; border-radius: 2px; background: var(--accent); display: inline-block; }
+  .card h4 { font-size: 14.5px; margin: 16px 0 8px; color: #334155; }
+
+  p { margin: 8px 0; }
+  ul.tight { margin: 8px 0 8px 22px; }
+  ul.tight li, ol.tight li { margin: 5px 0; }
+  b, strong { color: #0f172a; }
+
+  code { background: #eef2ff; color: var(--accent-dark); padding: 1px 6px; border-radius: 4px; font-family: "Cascadia Code", Consolas, "Courier New", monospace; font-size: 13px; word-break: break-all; }
+  pre { background: #0f172a; color: #e2e8f0; border-radius: 10px; padding: 16px 18px; overflow-x: auto; font-family: "Cascadia Code", Consolas, "Courier New", monospace; font-size: 13px; line-height: 1.7; margin: 10px 0; }
+  pre .c { color: #64748b; } /* 注释 */
+  pre .k { color: #7dd3fc; } /* 命令 */
+  pre .f { color: #fbbf24; } /* flag */
+  pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 12px 0; }
+  th, td { border: 1px solid var(--border); padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { background: #f1f5f9; font-weight: 600; white-space: nowrap; }
+  tr:nth-child(even) td { background: #fafbfd; }
+  td code, th code { white-space: nowrap; }
+  .center { text-align: center; }
+
+  .badge { display: inline-block; border-radius: 5px; padding: 1px 9px; font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; }
+  .badge.red { background: var(--red); } .badge.orange { background: var(--orange); }
+  .badge.green { background: var(--green); } .badge.blue { background: var(--accent); }
+  .badge.gray { background: #64748b; } .badge.dark { background: #0f172a; }
+
+  .pill { display: inline-block; border-radius: 999px; padding: 1px 10px; font-size: 12px; font-weight: 600; }
+  .pill.on  { background: var(--green-bg); color: var(--green); border: 1px solid #bbf7d0; }
+  .pill.off { background: var(--gray-bg);  color: #94a3b8; border: 1px solid #e2e8f0; }
+
+  /* 特性网格 */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 14px; margin: 14px 0; }
+  .feature { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; background: var(--gray-bg); }
+  .feature .t { font-weight: 700; font-size: 14.5px; margin-bottom: 4px; color: #0f172a; }
+  .feature .t .ic { margin-right: 6px; }
+  .feature p { font-size: 13px; color: #475569; margin: 0; }
+
+  /* 三阶段示意图 */
+  .stages { display: flex; flex-direction: column; gap: 0; margin: 18px 0 8px; }
+  .stage { display: flex; gap: 0; align-items: stretch; }
+  .stage .rail { width: 88px; flex: none; display: flex; flex-direction: column; align-items: center; }
+  .stage .dot { width: 46px; height: 46px; border-radius: 50%; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; box-shadow: 0 3px 8px rgba(0,0,0,.18); }
+  .stage .bar { width: 4px; flex: 1; background: linear-gradient(#cbd5e1, #cbd5e1); border-radius: 2px; min-height: 18px; }
+  .stage .body { flex: 1; border: 1px solid var(--border); border-radius: 12px; padding: 14px 18px; margin: 0 0 14px 8px; background: var(--card); }
+  .stage .body h3 { margin: 0 0 6px; font-size: 15.5px; color: #0f172a; }
+  .stage .body h3 .flag { font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px; color: var(--accent-dark); background: var(--blue-bg); padding: 1px 8px; border-radius: 4px; margin-left: 8px; font-weight: 600; }
+  .stage .body p, .stage .body li { font-size: 13.5px; color: #475569; }
+  .stage .body ul { margin: 4px 0 0 20px; }
+  .stage.s1 .dot { background: #7c3aed; } .stage.s1 .body { border-left: 4px solid #7c3aed; }
+  .stage.s2 .dot { background: #2563eb; } .stage.s2 .body { border-left: 4px solid #2563eb; }
+  .stage.s3 .dot { background: #0891b2; } .stage.s3 .body { border-left: 4px solid #0891b2; }
+  .stage.sf .dot { background: #16a34a; } .stage.sf .body { border-left: 4px solid #16a34a; }
+  .parallel { margin: 0 0 14px 96px; font-size: 12.5px; color: var(--accent-dark); background: var(--blue-bg); border: 1px dashed #93c5fd; border-radius: 8px; padding: 6px 12px; display: inline-block; }
+
+  /* 退出码 */
+  .codes { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin: 14px 0; }
+  .codebox { border-radius: 10px; padding: 14px 16px; border: 1px solid var(--border); }
+  .codebox .n { font-family: "Cascadia Code", Consolas, monospace; font-size: 26px; font-weight: 700; line-height: 1.2; }
+  .codebox .d { font-size: 12.5px; margin-top: 4px; color: #475569; }
+  .codebox.ok { background: var(--green-bg); border-color: #bbf7d0; } .codebox.ok .n { color: var(--green); }
+  .codebox.err { background: var(--red-bg);   border-color: #fecaca; } .codebox.err .n { color: var(--red); }
+  .codebox.warn { background: var(--orange-bg); border-color: #fed7aa; } .codebox.warn .n { color: var(--orange); }
+  .codebox.info { background: var(--gray-bg); border-color: #e2e8f0; } .codebox.info .n { color: #475569; }
+
+  /* 提示块 */
+  .note { border-radius: 10px; padding: 12px 16px; font-size: 13.5px; margin: 12px 0; border: 1px solid; }
+  .note.tip  { background: var(--green-bg); border-color: #bbf7d0; }
+  .note.warn { background: var(--orange-bg); border-color: #fed7aa; }
+  .note.danger { background: var(--red-bg); border-color: #fecaca; }
+  .note.info { background: var(--blue-bg); border-color: #bfdbfe; }
+  .note b.tag { display: inline-block; margin-right: 6px; font-size: 12px; border-radius: 4px; padding: 1px 8px; color: #fff; }
+  .note.tip b.tag { background: var(--green); } .note.warn b.tag { background: var(--orange); }
+  .note.danger b.tag { background: var(--red); } .note.info b.tag { background: var(--accent); }
+
+  /* FAQ 折叠 */
+  details { border: 1px solid var(--border); border-radius: 10px; padding: 0; margin: 10px 0; background: var(--gray-bg); }
+  details summary { cursor: pointer; padding: 12px 16px; font-weight: 600; font-size: 14px; list-style: none; display: flex; align-items: center; gap: 8px; }
+  details summary::before { content: "+"; width: 20px; height: 20px; flex: none; border-radius: 6px; background: var(--accent); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 14px; }
+  details[open] summary::before { content: "−"; }
+  details .a { padding: 0 16px 14px 44px; font-size: 13.5px; color: #475569; }
+
+  /* 模式对比 */
+  .modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; margin: 14px 0; }
+  .mode { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .mode .hd { padding: 10px 16px; color: #fff; font-weight: 700; font-size: 15px; }
+  .mode .bd { padding: 12px 16px; font-size: 13.5px; color: #475569; background: var(--card); }
+  .mode.single .hd { background: linear-gradient(135deg, #1d4ed8, #3b82f6); }
+  .mode.watch  .hd { background: linear-gradient(135deg, #0f766e, #14b8a6); }
+
+  footer { text-align: center; color: var(--muted); font-size: 13px; padding: 24px; border-top: 1px solid var(--border); }
+  footer a { color: var(--accent-dark); text-decoration: none; }
+
+  @media (max-width: 800px) {
+    nav, main, header { padding-left: 16px; padding-right: 16px; }
+    .card { padding: 20px 16px; }
+    .stage .rail { width: 56px; }
+    .parallel { margin-left: 64px; }
+  }
+  @media print {
+    nav { display: none; }
+    header { background: #1e293b !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .card { break-inside: avoid; box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="inner">
+    <h1><span class="cmd">kubectl-check</span> 用户手册</h1>
+    <p class="sub">kubectl 插件 · 部署后的自动化校验工具。rollout 由 CICD 触发，本工具只<b style="color:#fff">监视与告警</b>，不做任何实际更新操作；仅校验 Pod 层级（两级独立超时，无整体超时），不校验 Deployment 的超时与滚动状态。</p>
+    <div class="meta">
+      <span>当前版本 v0.7+</span>
+      <span>更新日期 2026-09-05</span>
+      <span>cobra + client-go 纯官方生态</span>
+      <span>退出码 0 / 1 / 2 / 3 / 130</span>
+    </div>
+  </div>
+</header>
+
+<nav><div class="inner">
+  <a href="#intro">概述</a>
+  <a href="#features">核心特性</a>
+  <a href="#install">安装</a>
+  <a href="#quickstart">快速开始</a>
+  <a href="#modes">运行模式</a>
+  <a href="#howitworks">工作原理</a>
+  <a href="#scenarios">场景与退出码</a>
+  <a href="#flags">参数参考</a>
+  <a href="#logs">日志能力</a>
+  <a href="#llm">LLM 仲裁</a>
+  <a href="#dump">日志落盘</a>
+  <a href="#feishu">飞书告警</a>
+  <a href="#antifalse">防误报</a>
+  <a href="#faq">FAQ</a>
+  <a href="#appendix">附录</a>
+</div></nav>
+
+<main>
+
+<!-- ================= 1 概述 ================= -->
+<div class="card" id="intro">
+  <h2><span class="no">1</span> 概述<span class="tag">Introduction</span></h2>
+  <p class="desc">kubectl-check 是什么、解决什么问题、不做什么。</p>
+
+  <p><code>kubectl-check</code> 是一个 <b>kubectl 插件</b>，用于 <b>Deployment 发布（rollout）后的自动化校验</b>：定位本次发布的目标 Pod，按两级独立超时校验 <b>Pod 就绪状态</b>与 <b>容器日志</b>，异常时发送告警（优先飞书，未配置降级控制台），并以标准化退出码结束——可直接嵌入 CICD 流水线做发布卡点。</p>
+
+  <h3>设计边界（先读这段，避免误解）</h3>
+  <ul class="tight">
+    <li><b>只监视，不操作</b>：不执行任何回滚、重启、扩缩容等变更动作。</li>
+    <li><b>仅校验 Pod 层级</b>：不校验 Deployment 滚动状态与收敛，无整体超时；<code>--pod-ready-timeout</code>（就绪）与 <code>--log-check-timeout</code>（日志）两段超时<b>彼此独立</b>。</li>
+    <li><b>目标 = 最新 ReplicaSet 的 Pod</b>：发布刚触发、新 RS 的 Pod 尚未创建时，会在就绪超时窗口内等待目标 Pod 出现（<b>Pending 即算定位成功</b>）。</li>
+    <li><b>日志内容判定默认全部关闭</b>：<code>--keyword-check</code>（关键字命中）与 <code>--llm-enable</code>（LLM 仲裁）均需显式开启；关闭时不影响退出检测与就绪校验。</li>
+  </ul>
+
+  <div class="note info"><b class="tag">环境要求</b>
+    本地需有可用的 <b>kubeconfig</b>（遵循 client-go 默认加载规则，支持 <code>KUBECONFIG</code> 环境变量）；工具以当前 kubeconfig 身份访问集群，权限需求与 <code>kubectl get pods / logs</code> 相当。
+  </div>
+</div>
+
+<!-- ================= 2 核心特性 ================= -->
+<div class="card" id="features">
+  <h2><span class="no">2</span> 核心特性<span class="tag">Features</span></h2>
+  <p class="desc">一览全部能力，点击对应章节可查看详细说明。</p>
+
+  <div class="grid">
+    <div class="feature"><div class="t"><span class="ic">🎯</span>目标定位（仅 Pod 层级）</div><p>启动即定位最新 RS 的目标 Pod（含 Pending，未出现则等待）；<code>replicas=0</code> 或窗口内未出现 → 告警后退出（码 2）。</p></div>
+    <div class="feature"><div class="t"><span class="ic">⏱️</span>两级独立超时</div><p><code>--pod-ready-timeout</code> 管 Pod 就绪，<code>--log-check-timeout</code> 管日志跟踪，互不挤占、无整体超时。</p></div>
+    <div class="feature"><div class="t"><span class="ic">🩺</span>就绪探针校验</div><p>阶段2 等待 Pod Ready 条件（等价 <code>kubectl wait --for=condition=ready</code>）；无探针容器 Running 即视为就绪。</p></div>
+    <div class="feature"><div class="t"><span class="ic">📜</span>实时日志观察</div><p>Pod 首次 Running 即启动日志 follow（不等 Ready），与就绪等待并行；<code>--log-console</code> 默认把日志逐行实时输出到控制台（效果同 <code>kubectl logs --follow</code>）。</p></div>
+    <div class="feature"><div class="t"><span class="ic">🔑</span>错误关键字命中</div><p><code>--keyword-check</code> 开启后按 <code>--log-err-keywords</code> 判定错误行；<code>--log-ignore-keywords</code> 抵消无害命中。</p></div>
+    <div class="feature"><div class="t"><span class="ic">🤖</span>LLM 日志错误仲裁</div><p><code>--llm-enable</code> 开启后，命中关键字的日志行交 LLM 批量判定真伪（攒批 + 去重），只有真错误才提醒/落盘；失败降级、连续失败熔断。</p></div>
+    <div class="feature"><div class="t"><span class="ic">💾</span>错误日志落盘</div><p><code>--log-dump</code> 开启后，命中真错误或容器异常退出时写 <code>{namespace}-{pod}-{date}.log</code>，错误行 ANSI 红色标注；两条落盘路径（LLM 全量快照 / 关键字增量追加）。</p></div>
+    <div class="feature"><div class="t"><span class="ic">🛡️</span>防误报设计</div><p>controller 删除中（Terminating）的 Pod 不计为异常；忽略关键字命中的行不参与判定与标红；同一故障仅一条告警。</p></div>
+    <div class="feature"><div class="t"><span class="ic">📣</span>飞书告警</div><p>优先飞书 interactive 卡片（HMAC-SHA256 签名、非阻塞发送、去重窗口）；<b>未配置 Webhook 自动降级控制台</b>，告警事件不静默丢弃。</p></div>
+    <div class="feature"><div class="t"><span class="ic">🚨</span>容器退出检测</div><p>容器异常退出（退出码 ≠ 0）不经仲裁、不受任何开关影响；Ready 前崩溃立即告警，不等就绪超时。</p></div>
+    <div class="feature"><div class="t"><span class="ic">👁️</span>监听模式（常驻）</div><p><code>-A</code> 监听全部命名空间，或 <code>-n</code> 过滤（多值 / <code>*</code> <code>?</code> 通配）；Deployment 创建或更新（generation 递增）时自动触发检查，存量不触发。</p></div>
+    <div class="feature"><div class="t"><span class="ic">🤚</span>优雅中断</div><p>收到 <code>SIGINT</code>/<code>SIGTERM</code>（Ctrl+C）时取消全部超时上下文、等待日志落盘、发送中断告警后退出（码 130），不误报为业务错误。</p></div>
+  </div>
+</div>
+
+<!-- ================= 3 安装 ================= -->
+<div class="card" id="install">
+  <h2><span class="no">3</span> 安装与构建<span class="tag">Install</span></h2>
+  <p class="desc">源码构建（支持交叉编译）→ 放入 PATH 即可作为 kubectl 插件使用。</p>
+
+  <h3>3.1 构建</h3>
+  <pre class="cmd-box"><span class="c"># 默认：linux + 本机架构 → bin/kubectl-check</span>
+<span class="k">make</span> build
+
+<span class="c"># 交叉编译 Windows（自动加 .exe 与 os-arch 后缀）→ bin/kubectl-check-windows-&lt;arch&gt;.exe</span>
+<span class="k">make</span> build <span class="f">GOOS=windows</span>
+
+<span class="c"># 交叉编译 macOS（可显式指定架构）</span>
+<span class="k">make</span> build <span class="f">GOOS=darwin</span> <span class="f">GOARCH=arm64</span>
+
+<span class="c"># 一次构建全部平台 / 安装到 GOBIN / 其他常用目标</span>
+<span class="k">make</span> all
+<span class="k">make</span> install
+<span class="k">make</span> test      <span class="c"># 运行全部单元测试</span></pre>
+  <ul class="tight">
+    <li>不指定参数时默认 <b>linux + 本机架构</b>，产物名保持 <code>kubectl-check</code> 不变；其他平台产物自动带 <code>-&lt;os&gt;-&lt;arch&gt;</code> 后缀，互不覆盖。</li>
+    <li>依赖仅 <code>github.com/spf13/cobra</code> 与 <code>k8s.io/client-go</code>（版本见 <code>go.mod</code>），构建前可 <code>make tidy</code> 整理依赖。</li>
+  </ul>
+
+  <h3>3.2 作为 kubectl 插件安装</h3>
+  <p>kubectl 会自动发现 <code>PATH</code> 中以 <code>kubectl-</code> 开头的可执行文件。将二进制命名为 <code>kubectl-check</code> 放入 <code>PATH</code> 即可：</p>
+  <pre class="cmd-box"><span class="c"># Linux / macOS</span>
+<span class="k">cp</span> bin/kubectl-check /usr/local/bin/kubectl-check
+<span class="k">kubectl</span> check -h
+
+<span class="c"># Windows：命名为 kubectl-check.exe 后放入 PATH</span></pre>
+  <p>也可以直接以独立二进制运行：<code>./kubectl-check -n delta deployment/my-app</code>，效果完全一致。</p>
+</div>
+
+<!-- ================= 4 快速开始 ================= -->
+<div class="card" id="quickstart">
+  <h2><span class="no">4</span> 快速开始<span class="tag">Quick Start</span></h2>
+  <p class="desc">三个最常见场景，复制即可用。</p>
+
+  <h3>场景 A：发布后立刻检查（CICD 卡点）</h3>
+  <pre class="cmd-box"><span class="c"># CICD 触发 rollout 后紧跟此命令：检查 delta 命名空间的 deployment/my-app</span>
+<span class="k">kubectl</span> check -n delta deployment/my-app</pre>
+  <p>Pod 全部就绪且无真错误 → 退出码 0；异常 → 告警 + 非零退出码，流水线据此决定是否卡点。</p>
+
+  <h3>场景 B：自定义超时 + 飞书告警 + 错误日志落盘</h3>
+  <pre class="cmd-box"><span class="k">kubectl</span> check -n delta deployment/my-app \
+  <span class="f">--pod-ready-timeout=300</span> <span class="f">--log-check-timeout=60</span> \
+  <span class="f">--log-dump</span> <span class="f">--log-error-dir=./errlogs</span> \
+  <span class="f">--feishu-webhook=https://open.feishu.cn/open-apis/bot/v2/hook/xxx</span> \
+  <span class="f">--feishu-secret=yyy</span></pre>
+
+  <h3>场景 C：监听模式（值守）</h3>
+  <pre class="cmd-box"><span class="c"># 监听所有命名空间：Deployment 创建/更新自动检查（常驻，Ctrl+C 退出）</span>
+<span class="k">kubectl</span> check -A
+
+<span class="c"># 只监听 prod 后缀命名空间（支持逗号分隔多值与 * / ? 通配）</span>
+<span class="k">kubectl</span> check -n <span class="f">'*-prod'</span></pre>
+
+  <div class="note tip"><b class="tag">提示</b>
+    资源参数支持 kubectl 两种风格：<code>deployment/my-app</code> 与 <code>deployment my-app</code>。当前仅支持 <code>deployment</code> 这一种资源类型。
+  </div>
+</div>
+
+<!-- ================= 5 运行模式 ================= -->
+<div class="card" id="modes">
+  <h2><span class="no">5</span> 两种运行模式<span class="tag">Modes</span></h2>
+  <p class="desc">带资源参数 = 单次检查；不带资源参数（配合 -A 或 -n）= 常驻监听。</p>
+
+  <div class="modes">
+    <div class="mode single">
+      <div class="hd">单次检查模式</div>
+      <div class="bd">
+        <p><b>触发</b>：手动执行 / CICD 流水线调用。</p>
+        <p><b>形式</b>：<code>kubectl check -n &lt;ns&gt; deployment/&lt;name&gt;</code></p>
+        <ul class="tight">
+          <li><code>-n</code> 须为<b>精确单值</b>（多值 / 通配符仅监听模式可用）</li>
+          <li>未指定 <code>-n</code> 时默认 <code>default</code></li>
+          <li>执行一次完整三阶段检查后按聚合结果退出</li>
+        </ul>
+      </div>
+    </div>
+    <div class="mode watch">
+      <div class="hd">监听模式（常驻）</div>
+      <div class="bd">
+        <p><b>触发</b>：<code>-A</code>（全部命名空间）或 <code>-n</code> 过滤（逗号分隔多值 + <code>*</code>/<code>?</code> 通配，如 <code>'*-prod'</code>、<code>delta,gamma</code>），<b>不带资源参数</b>。</p>
+        <ul class="tight">
+          <li>匹配命名空间的 Deployment <b>创建或更新（generation 递增）</b>时自动执行单次检查逻辑</li>
+          <li><b>纯 status 变化不触发</b>（副本数上报、ready 更新等）；<code>kubectl rollout restart</code> 会触发（它修改模板使 generation 递增）</li>
+          <li>同一 Deployment 相同 / 更小 generation 不重复触发；删除后同名重建（generation 重置）仍触发</li>
+          <li><b>启动时已存在的存量 Deployment 不触发</b>（避免 -A 启动瞬间对全集群扫一遍）</li>
+          <li>每次检查在独立 goroutine 中运行，互不阻塞</li>
+          <li>Ctrl+C / SIGTERM：停止监听并中断全部进行中的检查（退出码 130）</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="note warn"><b class="tag">注意</b>
+    <code>-A</code> 模式下不可再带资源参数（会报错）；无资源参数且未给 <code>-n</code> 也会报错——工具会给出明确的用法提示（退出码 1）。
+  </div>
+</div>
+
+<!-- ================= 6 工作原理 ================= -->
+<div class="card" id="howitworks">
+  <h2><span class="no">6</span> 工作原理：三阶段检查<span class="tag">How It Works</span></h2>
+  <p class="desc">目标定位 →（阶段2 就绪等待 ∥ 阶段3 日志观察）→ 聚合退出。两阶段并行、独立超时、终态联动。</p>
+
+  <div class="stages">
+    <div class="stage s1">
+      <div class="rail"><div class="dot">定</div><div class="bar"></div></div>
+      <div class="body">
+        <h3>目标定位<span class="flag">--pod-ready-timeout 窗口内</span></h3>
+        <p>启动时定位<b>本次发布（最新 ReplicaSet）</b>的目标 Pod，不校验 Deployment 的滚动状态：</p>
+        <ul>
+          <li>发布刚触发、新 RS 的 Pod 尚未创建 → 在窗口内轮询等待出现，<b>Pending 即算定位成功</b>；</li>
+          <li>滚动过程中陆续出现的新目标 Pod 会被<b>自动补录</b>纳入跟踪（上限为期望副本数，surge 超额副本不入名单）；<b>补录的 Pod 仅做就绪检查（不启用日志观察）</b>，日志判定由定位时已存在的首发 Pod 承担——同版本 Pod 同镜像同配置，一个副本的日志即可代表本次发布；</li>
+          <li>定位失败（<code>replicas=0</code> 无目标可等，或窗口内始终未出现）→ <b>发送告警后直接退出（码 2）</b>，不继续追踪。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="stage s2">
+      <div class="rail"><div class="dot">2</div><div class="bar"></div></div>
+      <div class="body">
+        <h3>阶段2：就绪等待<span class="flag">--pod-ready-timeout（默认 300s）</span></h3>
+        <ul>
+          <li>每个目标 Pod <b>各自独立</b>起算就绪超时（先发现的先起算，后补录的不吃亏）；</li>
+          <li>等待 <b>Ready 条件</b>（含就绪探针校验，等价 <code>kubectl wait --for=condition=ready</code>）；<b>无探针容器 Running 即就绪</b>；</li>
+          <li>就绪超时 / 重启次数超过 <code>--max-restart</code> / 容器异常退出 → 置全局 pod failure → <b>告警 + 退出码 3</b>；</li>
+          <li>优先级：<b>Pod 未就绪 &gt; 日志报错</b>（两害相权取其重，退出码跟随更严重者）。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="stage s3">
+      <div class="rail"><div class="dot">3</div><div class="bar"></div></div>
+      <div class="body">
+        <h3>阶段3：日志观察<span class="flag">--log-check-timeout（默认 60s，从首次 Running 起算）</span></h3>
+        <ul>
+          <li>Pod <b>首次进入 Running 即启动</b>（不等 Ready），follow 增量读取日志；</li>
+          <li>有探针时 <code>0/1 Running</code> 期间两阶段<b>共同作用</b>，任一终态<b>联动取消</b>另一路（同一故障仅一条告警）；</li>
+          <li>窗口结束无容器崩溃 → 正常退出；命中真错误仅发送提醒（<b>不改变退出码，仍为 0</b>）；</li>
+          <li>容器异常退出（退出码 ≠ 0）<b>不经仲裁、不受开关影响</b> → 退出码 3；Ready 前崩溃立即告警，不等就绪超时。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="parallel">⇅ 阶段2 与 阶段3 并行执行，超时各自独立、互不挤占</div>
+
+  <div class="stage sf">
+    <div class="rail"><div class="dot">终</div></div>
+    <div class="body">
+      <h3>聚合退出</h3>
+      <p>等待全部 goroutine（含日志落盘）完成后，按全局状态聚合出最终退出码（见下节）；收到中断信号则优雅退出（码 130）。</p>
+    </div>
+  </div>
+
+  <div class="note info"><b class="tag">后置补录说明</b>
+    多副本滚动更新时，定位阶段通常只能见到部分新 Pod；发现器以 1 秒轮询 + 全量 List 快照的方式补录后续出现的 Pod，直到达到期望副本数。"两个 Pod 同时创建"等并发时序由轮询快照模型天然吸收，不会漏跟踪、也不会重复跟踪。
+  </div>
+</div>
+
+<!-- ================= 7 场景与退出码 ================= -->
+<div class="card" id="scenarios">
+  <h2><span class="no">7</span> 判定场景与退出码<span class="tag">Scenarios &amp; Exit Codes</span></h2>
+  <p class="desc">三个判定场景 + 五个退出码，CICD 按退出码决定流水线行为。</p>
+
+  <h3>7.1 三个判定场景</h3>
+  <table>
+    <tr><th>场景</th><th>条件</th><th>动作</th><th>退出码</th></tr>
+    <tr>
+      <td><span class="badge green">场景 1</span> 全部正常</td>
+      <td>Pod 在超时内就绪，且无真错误日志</td>
+      <td>正常结束，无告警</td>
+      <td class="center"><code>0</code></td>
+    </tr>
+    <tr>
+      <td><span class="badge red">场景 2</span> 未就绪</td>
+      <td>Pod 超时未就绪（含探针失败）/ 重启超限 / 容器异常退出</td>
+      <td>发送<b>告警</b>，程序异常退出</td>
+      <td class="center"><code>3</code></td>
+    </tr>
+    <tr>
+      <td><span class="badge orange">场景 3</span> 带病运行</td>
+      <td>Pod 已就绪，但日志存在<b>真错误</b></td>
+      <td>发送提醒「xx pod 存在错误日志，但 pod 已就绪，需要检查」；<code>--log-dump</code> 开启时落盘。<b>不中断</b></td>
+      <td class="center"><code>0</code></td>
+    </tr>
+  </table>
+
+  <h3>7.2 退出码总表</h3>
+  <div class="codes">
+    <div class="codebox ok"><div class="n">0</div><div class="d">正常：场景1；或场景3（已就绪但存在真错误日志，已提醒）</div></div>
+    <div class="codebox err"><div class="n">1</div><div class="d">参数解析错误、目标资源不存在</div></div>
+    <div class="codebox warn"><div class="n">2</div><div class="d">目标定位失败：replicas=0 无目标可等，或窗口内未出现目标 Pod（告警后直接退出，不继续追踪）</div></div>
+    <div class="codebox err"><div class="n">3</div><div class="d">场景2：Pod 超时未就绪 / 重启超限 / 容器异常退出</div></div>
+    <div class="codebox info"><div class="n">130</div><div class="d">收到中断信号（Ctrl+C / SIGINT / SIGTERM）主动退出</div></div>
+  </div>
+
+  <div class="note tip"><b class="tag">流水线建议</b>
+    CICD 卡点可按 <code>code != 0</code> 判失败；若希望「带病运行」也算失败，需在脚本里额外解析场景3 的提醒输出（工具自身语义：就绪即不阻断）。
+  </div>
+</div>
+
+<!-- ================= 8 参数参考 ================= -->
+<div class="card" id="flags">
+  <h2><span class="no">8</span> 参数参考<span class="tag">Flags Reference</span></h2>
+  <p class="desc">全部 25 个参数，按功能分组。布尔开关均可用 <code>--flag</code> / <code>--flag=false</code> 控制。</p>
+
+  <h3>8.1 模式与资源</h3>
+  <table>
+    <tr><th style="width:220px">参数</th><th>作用</th><th style="width:190px">默认值</th></tr>
+    <tr><td><code>deployment/&lt;name&gt;</code>（位置参数）</td><td>监控资源，当前仅支持 <code>deployment</code>；支持 <code>deployment/name</code> 与 <code>deployment name</code> 两种风格。带此参数 = 单次检查模式</td><td>必传（单次模式）</td></tr>
+    <tr><td><code>-n / --namespace</code></td><td>命名空间。单次模式：精确单值，未指定用 <code>default</code>；监听模式（无资源参数）：逗号分隔多值 + <code>*</code>/<code>?</code> 通配（如 <code>'*-prod'</code>）</td><td>空（单次模式回填 <code>default</code>）</td></tr>
+    <tr><td><code>-A / --all-namespaces</code></td><td>监听所有命名空间，Deployment 创建/更新自动检查（常驻模式，无需资源参数）</td><td><code>false</code></td></tr>
+  </table>
+
+  <h3>8.2 超时与状态校验</h3>
+  <table>
+    <tr><th style="width:220px">参数</th><th>作用</th><th style="width:190px">默认值</th></tr>
+    <tr><td><code>--pod-ready-timeout</code></td><td>阶段2：Pod 就绪（Ready）超时（秒），必须 &gt; 0；同时作为目标定位等待窗口</td><td><code>300</code></td></tr>
+    <tr><td><code>--log-check-timeout</code></td><td>阶段3：日志跟踪超时（秒），从 Pod 首次 Running 起算；<code>&lt;=0</code> 视为禁用阶段3</td><td><code>60</code></td></tr>
+    <tr><td><code>--max-restart</code></td><td>Pod 最大允许重启次数，超过按失败处理（退出码 3）</td><td><code>0</code></td></tr>
+    <tr><td><code>--check-pod-status</code></td><td>Pod 状态强校验开关</td><td><code>true</code></td></tr>
+    <tr><td><code>--log-enable</code></td><td>实时日志监控开关（关闭则阶段3 整体不启动）</td><td><code>true</code></td></tr>
+  </table>
+
+  <h3>8.3 日志内容判定（关键字 → LLM）</h3>
+  <table>
+    <tr><th style="width:220px">参数</th><th>作用</th><th style="width:190px">默认值</th></tr>
+    <tr><td><code>--keyword-check</code></td><td><b>错误关键字判定总开关</b>。默认关闭（日志内容判定全关，退出检测不受影响）；开启后按 <code>--log-err-keywords</code> 命中判定，同时也是 LLM 仲裁的唯一命中入口</td><td><code>false</code></td></tr>
+    <tr><td><code>--log-err-keywords</code></td><td>日志异常关键字（逗号分隔），仅 <code>--keyword-check</code> 开启时生效</td><td><code>error,panic,fatal,exception,crash</code></td></tr>
+    <tr><td><code>--log-ignore-keywords</code></td><td>忽略的无害日志关键字（逗号分隔），命中的行不参与判定与标红</td><td>空</td></tr>
+    <tr><td><code>--log-tail</code></td><td>日志流开流时的回溯行数（LLM 禁用路径使用）</td><td><code>100</code></td></tr>
+  </table>
+
+  <h3>8.4 LLM 仲裁</h3>
+  <table>
+    <tr><th style="width:220px">参数</th><th>作用</th><th style="width:190px">默认值</th></tr>
+    <tr><td><code>--llm-enable</code></td><td>LLM 日志仲裁开关（需配合 <code>--keyword-check</code> 提供命中输入）；关闭则回退「关键字即真」</td><td><code>false</code></td></tr>
+    <tr><td><code>--llm-endpoint</code></td><td>OpenAI 兼容端点，仅 <code>--llm-enable</code> 开启时生效</td><td>智谱 GLM 地址</td></tr>
+    <tr><td><code>--llm-model</code></td><td>仲裁模型</td><td><code>GLM-4-Flash-250414</code></td></tr>
+    <tr><td><code>--llm-api-key</code></td><td>仲裁 API Key（仅出现在请求头，不写日志、不落盘）</td><td>内置（见安全提示）</td></tr>
+    <tr><td><code>--llm-timeout</code></td><td>LLM 单次判定超时（秒），端点启用时必须 &gt; 0</td><td><code>15</code></td></tr>
+  </table>
+
+  <h3>8.5 控制台输出与落盘</h3>
+  <table>
+    <tr><th style="width:220px">参数</th><th>作用</th><th style="width:190px">默认值</th></tr>
+    <tr><td><code>--log-console</code></td><td>日志控制台输出开关：把追踪流读到的日志行逐行实时输出到控制台（效果同 <code>kubectl logs --follow</code>，与判定/落盘互不影响）；关闭则静默</td><td><code>true</code></td></tr>
+    <tr><td><code>--log-dump</code></td><td>错误日志落盘开关：开启后命中真错误 / 容器异常退出时写文件</td><td><code>false</code></td></tr>
+    <tr><td><code>--log-error-dir</code></td><td>落盘目录（文件名：<code>namespace-podname-date.log</code>），仅 <code>--log-dump</code> 开启时生效</td><td><code>.</code></td></tr>
+  </table>
+
+  <h3>8.6 飞书告警</h3>
+  <table>
+    <tr><th style="width:220px">参数</th><th>作用</th><th style="width:190px">默认值</th></tr>
+    <tr><td><code>--feishu-webhook</code></td><td>飞书机器人 Webhook 地址，<b>非空即启用</b>飞书告警</td><td>空（降级控制台）</td></tr>
+    <tr><td><code>--feishu-secret</code></td><td>飞书签名密钥（HMAC-SHA256）</td><td>空</td></tr>
+    <tr><td><code>--feishu-dedup-window</code></td><td>同 Pod + 同事件告警去重窗口（秒）</td><td><code>30</code></td></tr>
+  </table>
+
+  <h3>8.7 其他</h3>
+  <table>
+    <tr><th style="width:220px">参数</th><th>作用</th><th style="width:190px">默认值</th></tr>
+    <tr><td><code>-v / --verbose</code></td><td>详细日志输出（阶段进展、后置发现、内部状态等）</td><td><code>false</code></td></tr>
+    <tr><td><code>-h / --help</code></td><td>帮助文档</td><td>—</td></tr>
+  </table>
+
+  <div class="note warn"><b class="tag">参数校验</b>
+    以下情况启动即报错（退出码 1）：<code>--pod-ready-timeout &lt;= 0</code>；<code>--log-check-timeout &lt; 0</code>；<code>--max-restart &lt; 0</code>；端点启用时 <code>--llm-timeout &lt;= 0</code>；单次模式下 <code>-n</code> 含多值/通配符；资源类型不是 <code>deployment</code>。
+  </div>
+</div>
+
+<!-- ================= 9 日志能力 ================= -->
+<div class="card" id="logs">
+  <h2><span class="no">9</span> 日志能力详解<span class="tag">Logging</span></h2>
+  <p class="desc">四个正交能力：控制台输出、关键字判定、LLM 仲裁、落盘——互相独立、可任意组合。</p>
+
+  <h3>9.1 能力矩阵</h3>
+  <table>
+    <tr><th>能力</th><th>开关</th><th>默认</th><th>说明</th></tr>
+    <tr><td>控制台实时输出</td><td><code>--log-console</code></td><td><span class="pill on">开启</span></td><td>追踪流读到的日志行逐行输出（原始行），效果同 <code>kubectl logs --follow</code>；与判定/落盘互不影响</td></tr>
+    <tr><td>错误关键字命中</td><td><code>--keyword-check</code></td><td><span class="pill off">关闭</span></td><td>关闭时 <code>errorHit</code> 恒为 false，场景3 提醒不触发；开启后由 <code>--log-err-keywords</code> 决定关键字</td></tr>
+    <tr><td>LLM 真伪仲裁</td><td><code>--llm-enable</code></td><td><span class="pill off">关闭</span></td><td>关闭时回退「关键字即真」；开启后只有<b>真错误</b>才提醒/落盘，假错误静默</td></tr>
+    <tr><td>错误日志落盘</td><td><code>--log-dump</code></td><td><span class="pill off">关闭</span></td><td>关闭时检测/告警/退出码均不受影响，仅不产生文件；开启后真错误/异常退出时写文件</td></tr>
+  </table>
+
+  <h3>9.2 判定链路</h3>
+  <p>日志行按以下顺序流经判定链（每层可独立开关）：</p>
+  <pre><code>follow 日志流 ──► --log-console 实时输出（旁路，不影响判定）
+       │
+       ▼
+ ① 忽略关键字 --log-ignore-keywords 命中？ ──是──► 放行（不参与判定与标红）
+       │否
+       ▼
+ ② 错误关键字 --log-err-keywords 命中？ ──否──► 正常行
+       │是（需 --keyword-check 开启）
+       ▼
+ ③ LLM 仲裁 --llm-enable 开启？ ──否──► 关键字即真（默认路径）
+       │是
+       ▼
+ ④ LLM 判定为真错误 ──是──► 场景3 提醒 +（--log-dump 开启时）落盘
+       │否
+       ▼
+      假错误，静默（不告警、不落盘、不标红）</code></pre>
+  <ul class="tight">
+    <li><b>不经仲裁的特例</b>：容器异常退出（退出码 ≠ 0）无条件按失败处理，<code>--log-dump</code> 开启时无条件落盘保留现场（LLM 启用时同样全量快照）。</li>
+    <li><b>优先级</b>：Pod 未就绪（场景2）&gt; 日志报错（场景3）。</li>
+  </ul>
+
+  <h3>9.3 常用组合速查</h3>
+  <table>
+    <tr><th>需求</th><th>参数组合</th></tr>
+    <tr><td>只看就绪，不关心日志内容（最轻量）</td><td><code>（默认即可，--log-console 开着也只是回显）</code></td></tr>
+    <tr><td>回显日志 + 关键字即真</td><td><code>--keyword-check</code></td></tr>
+    <tr><td>回显日志 + LLM 仲裁降误报 + 落盘</td><td><code>--keyword-check --llm-enable --log-dump --log-error-dir=./errlogs</code></td></tr>
+    <tr><td>静默值守（不刷屏），仅要告警与落盘</td><td><code>--log-console=false --keyword-check --llm-enable --log-dump</code></td></tr>
+    <tr><td>自定义关键字 + 忽略噪音</td><td><code>--keyword-check --log-err-keywords=error,panic --log-ignore-keywords="level=debug"</code></td></tr>
+  </table>
+</div>
+
+<!-- ================= 10 LLM 仲裁 ================= -->
+<div class="card" id="llm">
+  <h2><span class="no">10</span> LLM 日志错误仲裁<span class="tag">LLM Arbitration</span></h2>
+  <p class="desc">用大模型区分「真错误」与「关键字误报」，显著降低告警噪音。默认关闭，需 <code>--keyword-check --llm-enable</code> 同时开启。</p>
+
+  <h3>10.1 工作方式</h3>
+  <ul class="tight">
+    <li>命中错误关键字（且未被忽略关键字抵消）的日志行投入 <b>Pod 级有界队列</b>；</li>
+    <li><b>异步攒批</b>（10 行 / 2 秒）+ <b>相同行去重</b>后，以 OpenAI 兼容协议调用 LLM <b>批量判定</b>；system prompt 要求逐行返回 <code>{"results":[{"is_error":true|false},...]}</code>；</li>
+    <li>任一<b>真错误</b> → 发送场景3 提醒；<code>--log-dump</code> 开启时以容器启动时刻为起点（SinceTime）<b>全量拉取</b>该 Pod 各容器日志，覆盖写快照落盘，后续新真错误刷新快照；</li>
+    <li>全部<b>假错误</b> → 不告警、不落盘。</li>
+  </ul>
+
+  <h3>10.2 降级与熔断（可靠性设计）</h3>
+  <table>
+    <tr><th>情形</th><th>行为</th></tr>
+    <tr><td>LLM 调用失败（超时 / 网络 / 解析失败）</td><td>该批按「<b>关键字即真</b>」处理——宁误报不漏报</td></tr>
+    <tr><td>连续 3 次失败</td><td><b>自动熔断</b>：后续命中直接按关键字即真，不再发起网络调用</td></tr>
+    <tr><td><code>--llm-enable=false</code>（默认）</td><td>完整回退历史行为：<code>--log-tail</code> 回溯 + follow 增量；<code>--log-dump</code> 开启时首次命中落盘后追加</td></tr>
+  </table>
+
+  <h3>10.3 自建端点（敏感日志不出内网）</h3>
+  <pre class="cmd-box"><span class="k">kubectl</span> check -n delta deployment/my-app <span class="f">--keyword-check</span> <span class="f">--llm-enable</span> \
+  <span class="f">--llm-endpoint=http://llm.internal:8000/v1/chat/completions</span> \
+  <span class="f">--llm-model=my-model</span> <span class="f">--llm-api-key=xxx</span></pre>
+  <p>判定协议为 OpenAI 兼容（<code>/v1/chat/completions</code>），任何兼容网关（vLLM、OneAPI 等）均可接入。默认端点为智谱 GLM。</p>
+
+  <div class="note danger"><b class="tag">安全提示</b>
+    <ul class="tight" style="margin-bottom:0">
+      <li><b>默认 API Key 内置于源码</b>（<code>internal/llm</code> 常量）：仓库若公开有泄露风险，请用 <code>--llm-api-key</code> 覆盖，并到智谱控制台轮换内置 key。</li>
+      <li><b>日志内容会发送至 LLM 端点</b>（默认为云端）：敏感日志场景请将 <code>--llm-endpoint</code> 指向内网自建的 OpenAI 兼容端点。</li>
+      <li>API Key 仅出现在请求头，<b>不会写入任何日志输出或落盘文件</b>。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ================= 11 日志落盘 ================= -->
+<div class="card" id="dump">
+  <h2><span class="no">11</span> 错误日志落盘<span class="tag">Log Dump</span></h2>
+  <p class="desc"><code>--log-dump</code> 开启后，命中真错误 / 容器异常退出时保留日志现场，供事后排查。默认关闭。</p>
+
+  <h3>11.1 文件规则</h3>
+  <ul class="tight">
+    <li>文件命名：<code>{namespace}-{podName}-{date}.log</code>（<code>date</code> 格式 <code>20060102</code>，<b>跨天自动切换</b>文件）；</li>
+    <li>目录由 <code>--log-error-dir</code> 指定（默认当前目录 <code>.</code>）；</li>
+    <li><b>错误行用 ANSI 红色转义码标注</b>，忽略规则命中的行不标红；</li>
+    <li>关闭 <code>--log-dump</code> 时：检测、仲裁、告警、退出码均不受影响，仅不产生文件。</li>
+  </ul>
+
+  <h3>11.2 两条落盘路径</h3>
+  <table>
+    <tr><th style="width:170px">路径</th><th>机制</th><th>特点</th></tr>
+    <tr>
+      <td><b>LLM 启用</b><br><code>--llm-enable</code></td>
+      <td>确认真错误后，以<b>容器启动时刻</b>为起点（<code>State.Running.StartedAt</code>；已退出取 <code>LastTerminationState</code>；均不可得回退 Pod 创建时间）从 K8s API <b>全量拉取</b>从启动到当前的日志</td>
+      <td>覆盖写整份快照；新真错误刷新快照——文件始终是"从容器启动至今"的完整现场</td>
+    </tr>
+    <tr>
+      <td><b>LLM 禁用</b>（默认）</td>
+      <td>follow 流带 <code>--log-tail</code> 行回溯；命中关键字前缓冲在内存环形缓冲，<b>首次命中</b>把「回溯行 + 命中行」落盘，此后<b>增量追加</b></td>
+      <td>同日同 Pod 追加同一文件；无额外 API 拉取开销</td>
+    </tr>
+  </table>
+
+  <div class="note tip"><b class="tag">建议</b>
+    生产环境推荐 <code>--log-dump --log-error-dir</code> 指向独立目录（如 <code>./errlogs</code>），配合场景2/3 告警中的落盘路径提示，可在告警到达时直接定位现场文件。
+  </div>
+</div>
+
+<!-- ================= 12 飞书告警 ================= -->
+<div class="card" id="feishu">
+  <h2><span class="no">12</span> 飞书告警<span class="tag">Feishu Alert</span></h2>
+  <p class="desc">告警优先发飞书 interactive 卡片；未配置 Webhook 时自动降级控制台输出，告警事件从不静默丢弃。</p>
+
+  <h3>12.1 配置</h3>
+  <pre class="cmd-box"><span class="k">kubectl</span> check -n delta deployment/my-app \
+  <span class="f">--feishu-webhook=https://open.feishu.cn/open-apis/bot/v2/hook/xxx</span> \
+  <span class="f">--feishu-secret=yyy</span>          <span class="c"># 机器人开启了签名校验时填写（HMAC-SHA256）</span></pre>
+  <ul class="tight">
+    <li><code>--feishu-webhook</code> <b>非空即启用</b>飞书告警；为空（默认）时所有告警降级打印到控制台；</li>
+    <li>发送为<b>非阻塞</b>模式：告警发送失败或超时不影响检查流程与退出码；</li>
+    <li><code>--feishu-dedup-window</code>（默认 30 秒）：同 Pod + 同事件在窗口内只告警一次，防止滚动期间重复轰炸。</li>
+  </ul>
+
+  <h3>12.2 告警事件一览</h3>
+  <table>
+    <tr><th>事件</th><th>触发时机</th><th>级别</th></tr>
+    <tr><td>目标未找到</td><td>定位失败（replicas=0 / 窗口内无目标 Pod）</td><td><span class="badge red">阻断</span> 退出码 2</td></tr>
+    <tr><td>Pod 未就绪</td><td>阶段2 就绪超时（含探针失败）</td><td><span class="badge red">阻断</span> 退出码 3</td></tr>
+    <tr><td>容器异常退出</td><td>容器退出码 ≠ 0（Ready 前崩溃立即告警，不等就绪超时）</td><td><span class="badge red">阻断</span> 退出码 3</td></tr>
+    <tr><td>重启超限</td><td>重启次数超过 <code>--max-restart</code></td><td><span class="badge red">阻断</span> 退出码 3</td></tr>
+    <tr><td>存在错误日志</td><td>场景3：已就绪但存在真错误（提醒，不阻断）</td><td><span class="badge orange">提醒</span> 退出码 0</td></tr>
+    <tr><td>监听模式启动 / 触发</td><td>监听启动、Deployment 创建/更新触发检查（控制台 INFO）</td><td><span class="badge blue">信息</span></td></tr>
+    <tr><td>中断</td><td>收到 SIGINT/SIGTERM（发送中断告警后退出）</td><td><span class="badge gray">中断</span> 退出码 130</td></tr>
+  </table>
+</div>
+
+<!-- ================= 13 防误报 ================= -->
+<div class="card" id="antifalse">
+  <h2><span class="no">13</span> 防误报与可靠性设计<span class="tag">Anti-false-positive</span></h2>
+  <p class="desc">发布现场噪声多，工具内置多层防误报机制。</p>
+
+  <table>
+    <tr><th style="width:230px">机制</th><th>解决的问题</th></tr>
+    <tr><td><b>Terminating Pod 不计异常</b></td><td>滚动更新时 controller 删除中的 Pod（surge 缩容 / 回滚）phase 可能仍是 Running，若计入会误报——统一过滤（<code>DeletionTimestamp</code> 非空的 Pod 跳过）</td></tr>
+    <tr><td><b>忽略关键字抵消</b></td><td><code>--log-ignore-keywords</code> 命中的行不参与判定、不标红（如 <code>level=debug</code> 里的 "error" 字样）</td></tr>
+    <tr><td><b>LLM 真伪仲裁</b></td><td>关键字命中后由 LLM 判定真伪，假错误静默——只有真错误才提醒/落盘</td></tr>
+    <tr><td><b>两阶段终态联动</b></td><td>阶段2/3 任一出终态即取消另一路，<b>同一故障仅一条告警</b>，不重复轰炸</td></tr>
+    <tr><td><b>告警去重窗口</b></td><td>同 Pod + 同事件 30 秒内只告警一次</td></tr>
+    <tr><td><b>surge 副本不入名单</b></td><td>后置补录上限 = 期望副本数，滚动期间的超额临时副本不纳入跟踪，避免把"将被删除的 Pod"当成异常</td></tr>
+    <tr><td><b>LLM 失败降级 + 熔断</b></td><td>LLM 不可用时回退「关键字即真」（宁误报不漏报），连续失败熔断避免拖慢检查</td></tr>
+    <tr><td><b>优雅中断</b></td><td>Ctrl+C / SIGTERM 等待日志落盘后以码 130 退出，<b>不误报为业务错误</b>，CICD 可区分「人主动取消」与「检查失败」</td></tr>
+  </table>
+</div>
+
+<!-- ================= 14 FAQ ================= -->
+<div class="card" id="faq">
+  <h2><span class="no">14</span> 常见问题 FAQ<span class="tag">Troubleshooting</span></h2>
+  <p class="desc">按现象速查。排查时建议先加 <code>-v</code> 查看详细过程。</p>
+
+  <details>
+    <summary>退出码 2（目标定位失败）是怎么回事？</summary>
+    <div class="a">两种可能：① 目标 Deployment <code>replicas=0</code>，无目标可等；② 发布刚触发但新 RS 的 Pod 在 <code>--pod-ready-timeout</code> 窗口内始终未创建出来（如镜像拉取卡住、调度资源不足）。可加大 <code>--pod-ready-timeout</code> 或先排查 <code>kubectl get rs</code> 确认新 RS 是否产生 Pod。</div>
+  </details>
+  <details>
+    <summary>明明日志里有 error，为什么没有任何提醒？</summary>
+    <div class="a">日志内容判定默认<b>全部关闭</b>。需要显式开启：<code>--keyword-check</code>（关键字命中），需要 LLM 仲裁再加 <code>--llm-enable</code>。另外检查是否被 <code>--log-ignore-keywords</code> 抵消、以及 LLM 是否判为假错误（假错误静默是设计行为）。</div>
+  </details>
+  <details>
+    <summary>Pod 已就绪但日志有真错误，为什么不阻断（退出码还是 0）？</summary>
+    <div class="a">这是场景3 的设计语义：就绪即放行，仅发送提醒「xx pod 存在错误日志，但 pod 已就绪，需要检查」，不改变退出码。若流水线需要卡点，需自行解析提醒输出。</div>
+  </details>
+  <details>
+    <summary>为什么有些 Pod 没有被日志跟踪？</summary>
+    <div class="a">多副本滚动时，只有<b>定位阶段已存在的首发 Pod</b> 做完整检查（就绪 + 日志）；后置补录的 Pod 仅做就绪检查。同版本 Pod 同镜像同配置，一个副本的日志即可代表本次发布内容，这样也避免了 N 倍的 API 连接与 LLM 成本。后置 Pod 的故障由就绪超时兜底。</div>
+  </details>
+  <details>
+    <summary>飞书收不到告警？</summary>
+    <div class="a">① <code>--feishu-webhook</code> 是否非空（为空时降级控制台，去终端输出里找）；② 机器人若开启了签名校验，必须同时配置 <code>--feishu-secret</code>；③ 30 秒去重窗口内同事件只发一次；④ 告警为非阻塞发送，检查网络连通性。</div>
+  </details>
+  <details>
+    <summary>监听模式下为什么我改了 Deployment 却没触发检查？</summary>
+    <div class="a">只有 <b>spec 变化（generation 递增）</b>才触发：纯 status 更新（副本数上报、ready 数变化）不触发；启动时已存在的存量 Deployment 不触发；同一 generation 重复更新不触发。用 <code>kubectl rollout restart</code> 或改镜像/模板即可触发。</div>
+  </details>
+  <details>
+    <summary>落盘文件里为什么有乱码一样的字符？</summary>
+    <div class="a">错误行带有 <b>ANSI 红色转义码</b>（便于 <code>cat</code>/<code>less -R</code> 时直接标红显示）。用支持 ANSI 的查看器打开即可。</div>
+  </details>
+  <details>
+    <summary>如何减少 LLM 成本 / 让日志不出内网？</summary>
+    <div class="a">将 <code>--llm-endpoint</code> 指向内网自建的 OpenAI 兼容端点（vLLM / OneAPI 等），并用 <code>--llm-model</code> 指定自部署模型；或干脆关闭 LLM（<code>--llm-enable=false</code>）回到关键字即真的零成本路径。</div>
+  </details>
+  <details>
+    <summary>CICD 里怎么区分「用户取消」和「检查失败」？</summary>
+    <div class="a">退出码 <code>130</code> = 收到 SIGINT/SIGTERM 的主动退出；<code>3</code> = 检查失败；<code>2</code> = 目标定位失败。脚本按 <code>$?</code> 分支处理即可。</div>
+  </details>
+</div>
+
+<!-- ================= 15 附录 ================= -->
+<div class="card" id="appendix">
+  <h2><span class="no">15</span> 附录<span class="tag">Appendix</span></h2>
+  <p class="desc">项目结构与配套文档索引。</p>
+
+  <h3>15.1 项目结构</h3>
+  <pre><code>kubecheck/
+├── main.go                  入口，调用 cmd.Execute()
+├── internal/cmd/            cobra 命令、参数解析、客户端构建（kubeconfig / KUBECONFIG）
+├── internal/options/        Options 参数定义（两级独立超时 + LLM 参数秒级转换）
+├── internal/checker/        核心编排：目标定位 / 阶段2 就绪等待 / 阶段3 日志+仲裁调度 / 场景判定
+├── internal/recorder/       日志采集与落盘：关键字路径 + LLM 仲裁路径（channel 攒批/熔断/SinceTime 全量快照）
+├── internal/llm/            OpenAI 兼容 LLM 客户端（默认智谱 GLM，标准库实现，无额外依赖）
+├── internal/finish/         扫描落盘目录 + 文件名解析
+├── internal/feishu/         飞书 interactive 卡片 + HMAC 签名 + 去重 + 非阻塞发送
+├── internal/watcher/        监听模式（-A 全部 / -n 过滤，Deployment 创建/更新自动触发，存量抑制）
+├── e2e/                     E2E 测试脚本（真实集群）
+└── test/                    测试用 YAML 清单</code></pre>
+
+  <h3>15.2 配套文档</h3>
+  <table>
+    <tr><th>文档</th><th>内容</th></tr>
+    <tr><td><code>README.md</code></td><td>项目速览（特性 / 安装 / 参数 / 退出码）</td></tr>
+    <tr><td><code>doc/kubectl-check 插件设计规格说明书SPEC.md</code></td><td>完整设计规格</td></tr>
+    <tr><td><code>doc/kubectl-check-architecture.md</code></td><td>架构说明</td></tr>
+    <tr><td><code>doc/kubectl-check-uml.html</code></td><td>UML 设计核对图（用例 / 类 / 时序 / 状态）</td></tr>
+    <tr><td><code>doc/kubectl-check-code-flow.html</code></td><td>代码流程核对</td></tr>
+    <tr><td><code>doc/kubectl-check-e2e-test-report.md</code></td><td>E2E 测试报告</td></tr>
+  </table>
+
+  <div class="note info"><b class="tag">反馈</b>
+    发现文档与实际行为不一致时，以 <code>-h</code> 帮助与源码（<code>internal/cmd/cmd.go</code> 为参数唯一权威定义处）为准，并欢迎提 issue 修正。
+  </div>
+</div>
+
+</main>
+
+<footer>
+  kubectl-check 用户手册 · v0.7+ · 2026-09-05 · 与 <a href="kubectl-check-uml.html">UML 设计核对图</a> / <a href="kubectl-check-code-flow.html">代码流程核对</a> 配套阅读
+</footer>
+
+</body>
+</html>

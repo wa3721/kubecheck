@@ -79,10 +79,18 @@ func dep(ns, name string, gen int64) *appsv1.Deployment {
 	}
 }
 
-// newTestWatcher 构造 Watcher，注入 fake 检查器工厂
+// newTestWatcher 构造 Watcher（默认全部命名空间），注入 fake 检查器工厂
 func newTestWatcher(fc *fakeChecker) (*Watcher, *fake.Clientset) {
 	cs := fake.NewSimpleClientset()
-	w := New(&options.Options{}, cs)
+	w := New(&options.Options{}, cs, nil)
+	w.newChecker = func(_ *options.Options, _ kubernetes.Interface) checkerRunner { return fc }
+	return w, cs
+}
+
+// newTestWatcherNS 构造带命名空间过滤的 Watcher
+func newTestWatcherNS(fc *fakeChecker, ns []string) (*Watcher, *fake.Clientset) {
+	cs := fake.NewSimpleClientset()
+	w := New(&options.Options{}, cs, ns)
 	w.newChecker = func(_ *options.Options, _ kubernetes.Interface) checkerRunner { return fc }
 	return w, cs
 }
@@ -119,7 +127,7 @@ func waitFor(t *testing.T, timeout time.Duration, msg string, cond func() bool) 
 
 // TestNew 验证 New 初始化 maps 与默认工厂
 func TestNew(t *testing.T) {
-	w := New(&options.Options{}, fake.NewSimpleClientset())
+	w := New(&options.Options{}, fake.NewSimpleClientset(), nil)
 	if w.handled == nil {
 		t.Fatal("handled map 未初始化")
 	}
@@ -128,6 +136,33 @@ func TestNew(t *testing.T) {
 	}
 	if w.newChecker == nil {
 		t.Fatal("newChecker 工厂未初始化")
+	}
+}
+
+// TestNSFilter 验证命名空间过滤器：全量 / 精确 / 多值 / glob 通配 / 空项兜底
+func TestNSFilter(t *testing.T) {
+	all := newNSFilter(nil)
+	if !all.matchAll || !all.match("anything") {
+		t.Fatal("nil 过滤应匹配全部")
+	}
+
+	f := newNSFilter([]string{"flowtest", " e2e-ns-prod ", "*-prod", "app-?"})
+	if !f.match("flowtest") || !f.match("e2e-ns-prod") {
+		t.Fatal("精确项应命中")
+	}
+	if !f.match("my-prod") || !f.match("x-prod") {
+		t.Fatal("glob *-prod 应命中 prod 后缀命名空间")
+	}
+	if !f.match("app-a") || f.match("app-ab") {
+		t.Fatal("glob app-? 应仅匹配单字符后缀")
+	}
+	if f.match("flowtest-dev") || f.match("default") {
+		t.Fatal("未匹配项不应命中")
+	}
+
+	empty := newNSFilter([]string{"", " "})
+	if !empty.matchAll {
+		t.Fatal("全空项应兜底为全部")
 	}
 }
 
@@ -141,7 +176,7 @@ func TestTriggerDedup(t *testing.T) {
 	w, _ := newTestWatcher(fc)
 
 	// 首次触发 gen=2
-	w.trigger(dep("ns", "app", 2))
+	w.triggerUpdate(dep("ns", "app", 2))
 	g, ok := w.getHandled("ns/app")
 	if !ok || g != 2 {
 		t.Fatalf("首次触发后 handled 应为 ns/app=2，实际 ok=%v gen=%d", ok, g)
@@ -149,21 +184,21 @@ func TestTriggerDedup(t *testing.T) {
 	waitFor(t, 2*time.Second, "fake 检查器应被调用 1 次", func() bool { return fc.getRunCount() == 1 })
 
 	// 相同 generation 不重复触发
-	w.trigger(dep("ns", "app", 2))
+	w.triggerUpdate(dep("ns", "app", 2))
 	time.Sleep(50 * time.Millisecond)
 	if fc.getRunCount() != 1 {
 		t.Fatalf("相同 generation 不应重复触发，当前调用 %d 次", fc.getRunCount())
 	}
 
 	// 更小 generation 不触发
-	w.trigger(dep("ns", "app", 1))
+	w.triggerUpdate(dep("ns", "app", 1))
 	time.Sleep(50 * time.Millisecond)
 	if fc.getRunCount() != 1 {
 		t.Fatalf("更小 generation 不应触发，当前调用 %d 次", fc.getRunCount())
 	}
 
 	// 更大 generation 触发并更新 handled
-	w.trigger(dep("ns", "app", 3))
+	w.triggerUpdate(dep("ns", "app", 3))
 	waitFor(t, 2*time.Second, "fake 检查器应被调用 2 次", func() bool { return fc.getRunCount() == 2 })
 	g, _ = w.getHandled("ns/app")
 	if g != 3 {
@@ -179,8 +214,8 @@ func TestTriggerDifferentDeployments(t *testing.T) {
 	fc := &fakeChecker{}
 	w, _ := newTestWatcher(fc)
 
-	w.trigger(dep("ns-a", "app1", 1))
-	w.trigger(dep("ns-b", "app2", 1))
+	w.triggerUpdate(dep("ns-a", "app1", 1))
+	w.triggerUpdate(dep("ns-b", "app2", 1))
 	waitFor(t, 2*time.Second, "两个 Deployment 各触发一次", func() bool { return fc.getRunCount() == 2 })
 
 	if _, ok := w.getHandled("ns-a/app1"); !ok {
@@ -197,8 +232,8 @@ func TestInterrupt(t *testing.T) {
 	fc := &fakeChecker{blockRun: true, release: make(chan struct{})}
 	w, _ := newTestWatcher(fc)
 
-	w.trigger(dep("ns", "app1", 2))
-	w.trigger(dep("ns", "app2", 2))
+	w.triggerUpdate(dep("ns", "app1", 2))
+	w.triggerUpdate(dep("ns", "app2", 2))
 	waitFor(t, 2*time.Second, "两个检查器均应登记", func() bool { return w.getCheckerCount() == 2 })
 
 	w.Interrupt()
@@ -236,8 +271,13 @@ func TestRunUpdateEvent(t *testing.T) {
 	done := make(chan int, 1)
 	go func() { done <- w.Run(ctx) }()
 
-	// 等待 informer 缓存同步完成
-	time.Sleep(300 * time.Millisecond)
+	// 等待 informer 缓存同步完成 + 存量 Add 抑制的 200ms 缓冲
+	time.Sleep(500 * time.Millisecond)
+
+	// 存量 Deployment 的初始 Add 不应触发（存量抑制）
+	if fc.getRunCount() != 0 {
+		t.Fatalf("启动时存量 Add 不应触发检查，实际触发 %d 次", fc.getRunCount())
+	}
 
 	// status-only 更新（generation 保持 1）-> 不应触发
 	s := dep("ns", "app", 1)
@@ -250,8 +290,9 @@ func TestRunUpdateEvent(t *testing.T) {
 	if fc.getRunCount() != 0 {
 		t.Fatalf("status-only 更新不应触发检查，实际触发 %d 次", fc.getRunCount())
 	}
-	if _, ok := w.getHandled("ns/app"); ok {
-		t.Fatal("status-only 更新不应记录 handled")
+	// 存量 Add 已记录 handled=1（存量抑制副产品）；status-only 更新不应改动它
+	if g, ok := w.getHandled("ns/app"); !ok || g != 1 {
+		t.Fatalf("status-only 更新不应改动 handled，实际 ok=%v gen=%d", ok, g)
 	}
 
 	// generation 2 -> 触发检查
@@ -287,6 +328,110 @@ func TestRunUpdateEvent(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run 未在 ctx 取消后返回")
 	}
+}
+
+// TestRunAddEvent 验证 informer 的 Add 事件触发语义（-A 全命名空间）：
+//   - 启动时已存在的存量 Deployment（初始 List 的 Add）不触发（存量抑制）
+//   - 运行期新建 Deployment 触发（generation=1 也触发）
+//   - 删除后同名重建（generation 重置）仍触发（DeleteFunc 清理 handled）
+func TestRunAddEvent(t *testing.T) {
+	fc := &fakeChecker{}
+	w, cs := newTestWatcher(fc)
+
+	// 预置存量 deployment generation=5（sync 前已存在）
+	if _, err := cs.AppsV1().Deployments("ns").Create(context.Background(),
+		dep("ns", "existing", 5), metav1.CreateOptions{}); err != nil {
+		t.Fatalf("预置 Deployment 失败: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan int, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	// 等缓存同步 + 存量抑制缓冲
+	time.Sleep(500 * time.Millisecond)
+	if fc.getRunCount() != 0 {
+		t.Fatalf("存量 Deployment 不应触发检查，实际触发 %d 次", fc.getRunCount())
+	}
+	if g, ok := w.getHandled("ns/existing"); !ok || g != 5 {
+		t.Fatalf("存量 Add 应记录 handled=5 供 Update 去重，实际 ok=%v gen=%d", ok, g)
+	}
+
+	// 运行期新建 generation=1 -> 触发（创建语义）
+	if _, err := cs.AppsV1().Deployments("ns").Create(context.Background(),
+		dep("ns", "fresh", 1), metav1.CreateOptions{}); err != nil {
+		t.Fatalf("新建 Deployment 失败: %v", err)
+	}
+	waitFor(t, 3*time.Second, "运行期新建 Deployment 应触发检查", func() bool { return fc.getRunCount() == 1 })
+
+	// 删除后同名重建（generation 重置为 1）-> 仍触发
+	if err := cs.AppsV1().Deployments("ns").Delete(context.Background(),
+		"fresh", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("删除 Deployment 失败: %v", err)
+	}
+	waitFor(t, 3*time.Second, "删除后 handled 应清理", func() bool {
+		_, ok := w.getHandled("ns/fresh")
+		return !ok
+	})
+	if _, err := cs.AppsV1().Deployments("ns").Create(context.Background(),
+		dep("ns", "fresh", 1), metav1.CreateOptions{}); err != nil {
+		t.Fatalf("重建 Deployment 失败: %v", err)
+	}
+	waitFor(t, 3*time.Second, "删重建（generation 重置）应再次触发", func() bool { return fc.getRunCount() == 2 })
+
+	cancel()
+	select {
+	case code := <-done:
+		if code != checker.CodeOK {
+			t.Fatalf("ctx 取消后 Run 应返回 CodeOK(0)，实际 %d", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run 未在 ctx 取消后返回")
+	}
+}
+
+// TestRunNSFilter 验证 -n 命名空间过滤（glob）：仅匹配命名空间的事件触发
+func TestRunNSFilter(t *testing.T) {
+	fc := &fakeChecker{}
+	w, cs := newTestWatcherNS(fc, []string{"*-prod"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { w.Run(ctx) }()
+	time.Sleep(500 * time.Millisecond) // 等同步
+
+	// 不匹配命名空间：创建 + 更新都不触发
+	if _, err := cs.AppsV1().Deployments("flowtest").Create(context.Background(),
+		dep("flowtest", "app", 1), metav1.CreateOptions{}); err != nil {
+		t.Fatalf("创建失败: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if fc.getRunCount() != 0 {
+		t.Fatalf("非匹配命名空间的创建不应触发，实际 %d 次", fc.getRunCount())
+	}
+	if _, err := cs.AppsV1().Deployments("flowtest").Update(context.Background(),
+		dep("flowtest", "app", 2), metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("更新失败: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if fc.getRunCount() != 0 {
+		t.Fatalf("非匹配命名空间的更新不应触发，实际 %d 次", fc.getRunCount())
+	}
+
+	// 匹配命名空间（*-prod 后缀）：创建触发
+	if _, err := cs.AppsV1().Deployments("e2e-ns-prod").Create(context.Background(),
+		dep("e2e-ns-prod", "app", 1), metav1.CreateOptions{}); err != nil {
+		t.Fatalf("创建失败: %v", err)
+	}
+	waitFor(t, 3*time.Second, "匹配命名空间的创建应触发", func() bool { return fc.getRunCount() == 1 })
+
+	// 匹配命名空间：更新（generation 递增）触发
+	if _, err := cs.AppsV1().Deployments("e2e-ns-prod").Update(context.Background(),
+		dep("e2e-ns-prod", "app", 2), metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("更新失败: %v", err)
+	}
+	waitFor(t, 3*time.Second, "匹配命名空间的更新应触发", func() bool { return fc.getRunCount() == 2 })
 }
 
 // TestRunCancelBeforeSync 验证 ctx 提前取消时 Run 走缓存同步失败分支返回 CodeParam

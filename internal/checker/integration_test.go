@@ -43,7 +43,6 @@ func TestIntegrationDevNginx(t *testing.T) {
 		Namespace:             "dev",
 		ResourceType:          "deployment",
 		ResourceName:          "nginx",
-		DeployReadyTimeoutSec: 120,
 		PodReadyTimeoutSec:    120,
 		LogCheckTimeoutSec:    60,
 		FeishuDedupWindowSec:  30,

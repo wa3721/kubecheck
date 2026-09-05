@@ -8,7 +8,7 @@
 # 运行：
 #   kubectl-check deployment/flow-c9 -n flowtest \
 #     --log-error-dir /tmp/flowlogs --log-error-keyword ERROR \
-#     --deploy-ready-timeout 90 --pod-ready-timeout 30 --log-check-timeout 90
+#     --pod-ready-timeout 30 --log-check-timeout 90
 # 期望：exit 3；/tmp/flowlogs 下产生 flowtest-flow-c9-*.log（含 sidecar 的 ERROR 行），
 #       告警提示容器异常退出（退出码 3）。
 apiVersion: apps/v1

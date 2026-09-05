@@ -6,7 +6,7 @@
 # 运行：
 #   kubectl-check deployment/flow-c13 -n flowtest \
 #     --log-error-dir /tmp/flowlogs --log-error-keyword FATAL --log-ignore-keyword "known issue" \
-#     --deploy-ready-timeout 60 --pod-ready-timeout 30 --log-check-timeout 12
+#     --pod-ready-timeout 30 --log-check-timeout 12
 # 期望：exit 0（容器未退出）；/tmp/flowlogs 下产生 flowtest-flow-c13-*.log，
 #       文件仅包含命中 FATAL 且未被 ignore 的行，且标红。
 apiVersion: apps/v1

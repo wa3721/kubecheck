@@ -1,11 +1,13 @@
 package feishu
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -77,6 +79,14 @@ func TestBuildPayload(t *testing.T) {
 	if msg.Sign == "" {
 		t.Fatal("sign missing")
 	}
+	// 卡片正文必须包含资源名（key）与详情，与控制台降级输出三要素一致
+	raw := string(payload)
+	if !strings.Contains(raw, "myapp") {
+		t.Fatalf("card body missing resource name (key): %s", raw)
+	}
+	if !strings.Contains(raw, "detail here") {
+		t.Fatalf("card body missing detail: %s", raw)
+	}
 
 	// 无 secret 时不应带 sign/timestamp
 	f2 := New("https://hook", "", 0)
@@ -119,6 +129,10 @@ func TestSend(t *testing.T) {
 	if !strings.Contains(gotBody, "interactive") {
 		t.Fatalf("payload missing interactive card: %s", gotBody)
 	}
+	// 卡片正文应包含资源名（key）与详情
+	if !strings.Contains(gotBody, "myapp") || !strings.Contains(gotBody, "detail") {
+		t.Fatalf("card body should contain key and detail: %s", gotBody)
+	}
 }
 
 // TestSendDisabled 未启用时不发送
@@ -126,4 +140,61 @@ func TestSendDisabled(t *testing.T) {
 	f := New("", "", 0)
 	// 不应 panic 或阻塞
 	f.Send(EventPodStatus, "myapp", "detail")
+}
+
+// TestSendDisabledConsoleFallback 未配置 webhook 时降级控制台：
+// 输出含事件类型/资源名/详情三要素（与卡片正文一致），且去重窗口内不重复打印
+func TestSendDisabledConsoleFallback(t *testing.T) {
+	f := New("", "", 10*time.Second)
+
+	output := captureStdout(t)
+	f.Send(EventPodStatus, "myapp", "detail here")
+	f.Send(EventPodStatus, "myapp", "detail here") // 窗口内重复 -> 去重
+	out := output()
+
+	for _, want := range []string{"[ALERT]", EventPodStatus, "myapp", "detail here"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("console fallback missing %q, got: %q", want, out)
+		}
+	}
+	if strings.Count(out, "[ALERT]") != 1 {
+		t.Fatalf("duplicate alert should be deduped, got %d alerts: %q", strings.Count(out, "[ALERT]"), out)
+	}
+}
+
+// TestSendDisabledConsoleFallbackPendingCheck 提示类事件（日志需检查，Pod 存活）：
+// 控制台级别为 [WARN]（黄色）而非 [ALERT]（红色）——飞书卡片橙色与退出码 0 不受影响
+func TestSendDisabledConsoleFallbackPendingCheck(t *testing.T) {
+	f := New("", "", 10*time.Second)
+
+	output := captureStdout(t)
+	f.Send(EventPendingCheck, "myapp", "detail here")
+	out := output()
+
+	for _, want := range []string{"[WARN]", EventPendingCheck, "myapp", "detail here"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("console fallback missing %q, got: %q", want, out)
+		}
+	}
+	if strings.Contains(out, "[ALERT]") {
+		t.Fatalf("pending-check event should print [WARN] not [ALERT], got: %q", out)
+	}
+}
+
+// captureStdout 重定向标准输出，返回恢复函数与捕获内容
+func captureStdout(t *testing.T) func() string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	return func() string {
+		w.Close()
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		os.Stdout = old
+		return buf.String()
+	}
 }

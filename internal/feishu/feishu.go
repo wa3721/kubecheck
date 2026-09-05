@@ -10,13 +10,15 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"kubecheck/internal/console"
 )
 
 // 事件类型（用于消息标题、header 着色与去重 key）
 const (
 	EventPodStatus     = "Pod状态异常"
 	EventRestartLimit  = "重启次数超限"
-	EventDeployTimeout = "Deployment就绪超时"
+	EventNoTargetPod   = "未找到目标Pod"
 	EventPendingCheck  = "日志需检查"
 	EventContainerExit = "容器异常退出"
 	EventInterrupted   = "检查被中断"
@@ -65,12 +67,20 @@ func (f *FeishuAlert) Send(eventType, title, detail string) {
 	go f.post(eventType, title, detail)
 }
 
-// printConsole 未配置 Webhook 时的控制台告警输出（带去重）
+// printConsole 控制台告警输出（未配置 Webhook 或发送失败的统一降级格式，带去重）。
+// 格式与飞书卡片正文一致：事件类型 + 资源名（title）+ 详情（detail）三要素齐全。
+// 级别与着色：异常类事件 [ALERT] 红色；提示类（EventPendingCheck：日志命中真错误但
+// Pod 存活）[WARN] 黄色——飞书卡片仍为橙色、退出码仍为 0，不受控制台级别影响。
 func (f *FeishuAlert) printConsole(eventType, title, detail string) {
 	if f.dedup(eventType + "|" + title) {
 		return
 	}
-	fmt.Printf("\n[ALERT][%s] %s\n%s\n----------------------------\n", eventType, title, detail)
+	level, color := "[ALERT]", console.Red
+	if eventType == EventPendingCheck {
+		level, color = "[WARN]", console.Yellow
+	}
+	fmt.Printf("\n%s\n----------------------------\n",
+		color(fmt.Sprintf("%s[%s] %s\n%s", level, eventType, title, detail)))
 }
 
 // dedup 同 Pod + 同事件在去重窗口内仅发送一条
@@ -90,13 +100,13 @@ func (f *FeishuAlert) dedup(key string) bool {
 func (f *FeishuAlert) post(eventType, title, detail string) {
 	payload, err := f.buildPayload(eventType, title, detail)
 	if err != nil {
-		fmt.Printf("[WARN] 构造飞书消息失败: %v\n", err)
+		fmt.Println(console.Yellow(fmt.Sprintf("[WARN] 构造飞书消息失败: %v", err)))
 		f.printConsole(eventType, title, detail)
 		return
 	}
 	resp, err := f.client.Post(f.webhook, "application/json", bytes.NewReader(payload))
 	if err != nil {
-		fmt.Printf("[WARN] 飞书告警发送失败: %v\n", err)
+		fmt.Println(console.Yellow(fmt.Sprintf("[WARN] 飞书告警发送失败: %v", err)))
 		// 降级：告警内容打印到控制台，保证告警不丢失
 		f.printConsole(eventType, title, detail)
 		return
@@ -109,13 +119,15 @@ func (f *FeishuAlert) post(eventType, title, detail string) {
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&r)
 	if resp.StatusCode != http.StatusOK || r.Code != 0 {
-		fmt.Printf("[WARN] 飞书告警返回异常: status=%d code=%d msg=%s\n", resp.StatusCode, r.Code, r.Msg)
+		fmt.Println(console.Yellow(fmt.Sprintf("[WARN] 飞书告警返回异常: status=%d code=%d msg=%s", resp.StatusCode, r.Code, r.Msg)))
 		// 降级：告警内容打印到控制台
 		f.printConsole(eventType, title, detail)
 	}
 }
 
-// buildPayload 构造 interactive 消息卡片（header 按事件类型着色）
+// buildPayload 构造 interactive 消息卡片（header 按事件类型着色）。
+// 卡片正文与控制台降级输出同为三要素：资源名（title）+ 详情（detail），
+// 控制台以事件类型前缀呈现，卡片以 header 标题呈现。
 func (f *FeishuAlert) buildPayload(eventType, title, detail string) ([]byte, error) {
 	card := map[string]interface{}{
 		"config": map[string]interface{}{"wide_screen_mode": true},
@@ -127,6 +139,10 @@ func (f *FeishuAlert) buildPayload(eventType, title, detail string) ([]byte, err
 			},
 		},
 		"elements": []interface{}{
+			map[string]interface{}{
+				"tag":  "div",
+				"text": map[string]interface{}{"tag": "lark_md", "content": fmt.Sprintf("**资源**: %s", title)},
+			},
 			map[string]interface{}{
 				"tag":  "div",
 				"text": map[string]interface{}{"tag": "lark_md", "content": detail},

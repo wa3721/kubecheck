@@ -8,7 +8,7 @@
 # 运行：
 #   kubectl-check deployment/flow-c11 -n flowtest \
 #     --log-error-dir /tmp/flowlogs --log-error-keyword ERROR \
-#     --deploy-ready-timeout 90 --pod-ready-timeout 30 --log-check-timeout 90
+#     --pod-ready-timeout 30 --log-check-timeout 90
 # 期望：exit 3；告警指向报错的 Pod 及对应落盘日志文件（2 个副本各一个 .log）。
 apiVersion: apps/v1
 kind: Deployment

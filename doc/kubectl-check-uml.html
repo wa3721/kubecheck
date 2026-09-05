@@ -41,7 +41,7 @@
 
 <header>
   <h1>kubectl-check 插件 · UML 设计核对图</h1>
-  <p>基于 SPEC：cobra 命令行 · client-go（第一级 Deployment informer 事件驱动 + 第二级 Pod 1s 轮询）· 两级独立检查（无整体超时）· 三段独立超时 · 日志错误落盘（Follow 实时流增量落盘+错误行红色标注） · 飞书告警 · 版本 v0.6+ / 2026-08-20</p>
+  <p>基于 SPEC：cobra 命令行 · client-go（三阶段均 1s 轮询）· 三阶段独立检查（无整体超时）· 阶段1 目标锁定 / 阶段2 Pod 就绪 / 阶段3 日志观察 + LLM 仲裁（--llm-enable 开启，默认关闭）· 真错误 SinceTime 全量落盘 · 飞书告警 · 版本 v0.7+ / 2026-09-03</p>
 </header>
 
 <nav>
@@ -67,11 +67,11 @@ flowchart LR
         FEISHU["飞书机器人"]
     end
     subgraph System["kubectl-check 插件"]
-        UC1["第一级 校验 Deployment 就绪状态<br/>（--deploy-ready-timeout / -n）<br/>rolloutComplete 四条件"]
-        UC2["第二级 Pod 状态轮询 + 日志观察<br/>（--pod-ready-timeout / --log-check-timeout）"]
-        UC3["实时日志流采集（Follow）<br/>+ 错误关键字匹配（独立超时）"]
-        UC4["错误日志落盘<br/>namespace-podname-date.log<br/>Follow 实时流增量落盘 + 错误行标红"]
-        UC5["飞书告警<br/>就绪超时 / Pod 状态异常 / 容器退出<br/>重启超限 / 需要检查 / 中断"]
+        UC1["目标定位（-n）<br/>轮询等待最新 RS 的目标 Pod 出现<br/>不校验 Deployment 超时与滚动状态"]
+        UC2["阶段2 Pod 就绪轮询 + 日志观察<br/>（--pod-ready-timeout / --log-check-timeout）"]
+        UC3["实时日志流采集（Follow）<br/>+ 错误关键字匹配 + LLM 仲裁（独立超时）"]
+        UC4["错误日志落盘（--log-dump 开启，默认关闭）<br/>namespace-podname-date.log<br/>真错误 SinceTime 全量快照（错误行标红）"]
+        UC5["飞书告警<br/>未找到目标 Pod / Pod 状态异常 / 容器退出<br/>重启超限 / 需要检查 / 中断"]
         UC7["标准化退出码<br/>0 / 1 / 2 / 3 / 130"]
     end
     USER --> UC1
@@ -96,7 +96,6 @@ classDiagram
         +string Namespace
         +string ResourceType
         +string ResourceName
-        +int DeployReadyTimeoutSec
         +int PodReadyTimeoutSec
         +int LogCheckTimeoutSec
         +int MaxRestart
@@ -122,27 +121,38 @@ classDiagram
         -clientset kubernetes.Interface
         -feishu *FeishuAlert
         -rec *LogErrorRecorder
-        -factory informers.SharedInformerFactory
+        -judge ErrorJudge
         -wg sync.WaitGroup
-        -cancels map[string]context.CancelFunc
+        -cancels []context.CancelFunc
         +Run(ctx) int
-        -waitDeploymentReady(ctx)
+        -locateTargetPods(ctx)
         -listTargetPods(ctx)
-        -waitForTargetPods(ctx)
         -watchPods(ctx, pods)
         -trackPod(ctx, pod)
-        -waitPodRunning(ctx, pod)
+        -waitFirstRunning(ctx, pod) (Time, bool)
+        -waitReady(ctx, pod) (bool, bool)
         -watchPodLog(ctx, pod, runningAt)
         -Interrupt()
         -logf(format, ...)
         -alert(event, key, detail)
     }
+    class LLMClient {
+        +New(endpoint, model, apiKey, timeout)
+        +Enabled() bool
+        +Timeout() Duration
+        +Judge(ctx, lines) ([]bool, error)
+        -judgeBatch(ctx, lines)
+        -parseJudgeContent(content)
+    }
     class LogErrorRecorder {
-        +TrackLog(ctx, pod, errKw, ignoreKw, tail) (bool, error)
+        +TrackLog(ctx, cs, pod, judge, errKw, ignoreKw, tail)
+        -trackLogKeyword(...)（关键字即真路径）
+        -trackLogWithJudge(...)（LLM 仲裁路径）
+        -snapshotFull(ctx, cs, pod, errKw, ignoreKw)
         +RecordedPath string
         +FilePath(ns, podName) string
         -colorizeErrorLine(line, container, errKw, ignoreKw)
-        -appendFile(path)
+        -truncFile(path, trunc) / appendFile(path)
         -waitForContainerRunning(ctx, pod)
     }
     class FeishuAlert {
@@ -154,7 +164,8 @@ classDiagram
         -printConsole(eventType, title, detail)
     }
     CheckCommand --> Checker : 构造并执行
-    Checker --> LogErrorRecorder : 日志流采集 / 增量落盘
+    Checker --> LLMClient : 日志错误仲裁（ErrorJudge 接口）
+    Checker --> LogErrorRecorder : 日志流采集 / 双路径落盘
     Checker --> FeishuAlert : 6 类事件告警（未配置则降级控制台）
   </pre>
 </div>
@@ -162,7 +173,7 @@ classDiagram
 <!-- ============ 3. 时序图 ============ -->
 <div class="card" id="sequence">
   <h2>3. 时序图<span class="tag">Sequence</span></h2>
-  <p class="desc">两级流程：第一级 Deployment informer 就绪超时→告警并直接退出（退出码 2）；第二级 waitForTargetPods 前置 → 逐 Pod「阶段2 waitPodRunning → 阶段3 watchPodLog」。优先级：Pod 异常 &gt; 日志告警。</p>
+  <p class="desc">目标定位 + 两阶段流程：目标定位（locateTargetPods 轮询等待目标 Pod 出现）未找到目标 Pod → 告警并直接退出（退出码 2）；定位后逐 Pod「waitFirstRunning 等首次 Running → 并行：阶段2 waitReady 就绪等待 + 阶段3 watchPodLog 日志观察（LLM 仲裁 + 退出检测）」（有探针时 0/1 Running 期间共同作用，任一终态 podCtx 联动取消另一路）。优先级：Pod 异常 &gt; 日志告警。</p>
   <pre class="mermaid">
 sequenceDiagram
     autonumber
@@ -170,39 +181,58 @@ sequenceDiagram
     participant CHK as Checker
     participant K8S as client-go / K8s
     participant LR as LogErrorRecorder
-    participant FS as 落盘文件 (.log)
+    participant LLM as LLM 仲裁（--llm-enable 开启, 默认端点智谱 GLM）
+    participant FS as 落盘文件 (.log，--log-dump 开启时)
     participant FA as FeishuAlert
 
     CLI->>CHK: Run(ctx, opts)
-    Note over CHK: 第一级：waitDeploymentReady(ctx)
-    CHK->>K8S: Deployment informer 监听 (deploy-ready-timeout)<br/>WaitForCacheSync + 首次同步后补查
-    alt rolloutComplete 命中（四条件）
-        K8S-->>CHK: 就绪事件
-    else 就绪超时
-        CHK->>FA: 发送告警（Deployment 就绪超时）
+    Note over CHK: 目标定位：locateTargetPods(ctx) 轮询等待目标 Pod 出现
+    CHK->>K8S: Get Deployment（判 replicas）+ List RS + List Pods<br/>（最新 revision RS selector，不校验 Deployment 状态）
+    alt 目标 Pod 出现（Pending 即算定位成功）
+        K8S-->>CHK: 目标 Pod 名单
+    else 未找到目标 Pod（replicas=0 / 窗口超时）
+        CHK->>FA: 发送告警（未找到目标 Pod）
         FA-->>CHK: 优先飞书 / 降级控制台
-        Note over CHK: 直接退出（退出码 2，不进入第二级）
+        Note over CHK: 直接退出（退出码 2，不进入阶段2/3）
     end
-    CHK->>K8S: waitForTargetPods（PodReadyTimeout 内 1s 轮询，等待 Pod 出现）
-    loop 每个 Pod（阶段2 → 阶段3 串行）
-        par 阶段2：Pod 状态轮询 waitPodRunning
-            CHK->>K8S: 1s 轮询 Get（--pod-ready-timeout）
-            K8S-->>CHK: Running / 超时未就绪
-            alt 超时未进入 Running
-                CHK->>FA: alert(EventPodStatus)
+    loop 每个 Pod（阶段2/3 并行：首次 Running 启动阶段3）
+        CHK->>K8S: waitFirstRunning 等首次 Running（--pod-ready-timeout 前半）
+        K8S-->>CHK: Running（锚点 runningAt）
+        Note over CHK: 并行启动阶段2 Ready 等待 + 阶段3 日志观察<br/>（podCtx 联动：任一终态取消另一路）
+        par 阶段2：Pod 就绪轮询 waitReady
+            CHK->>K8S: 1s 轮询 Get（--pod-ready-timeout 剩余预算）
+            K8S-->>CHK: PodReady 条件 / removed / 超时
+            alt 超时未就绪
+                CHK->>FA: alert(EventPodStatus)「未就绪」（取消阶段3）
                 CHK-->>CLI: 退出 code=3
+            else removed（controller 删除，surge/回滚）
+                Note over CHK: 静默跳过（非应用故障）
+            else 就绪（阶段2 结束，阶段3 继续至窗口结束）
+                Note over CHK: 无探针容器通常秒级就绪
             end
-        and 阶段3（进入 Running 后）：watchPodLog 日志观察
+        and 阶段3（首次 Running 即启动）：watchPodLog 日志观察
             loop 实时日志流读取（--log-check-timeout）
                 K8S-->>CHK: 日志行
-                CHK->>LR: TrackLog（命中错误关键字 → errorHit）
-                LR->>FS: 命中错误关键字才落盘（先缓冲「启动到报错」，后增量追加），错误行 ANSI 红色标注
+                CHK->>LR: TrackLog（命中行 → 仲裁 / 关键字判定）
+                alt LLM 启用（默认）
+                    LR->>LLM: 攒批(10行/2s)+去重 → Judge 批量判定
+                    alt 任一真错误
+                        LR->>K8S: GetLogs(SinceTime=容器启动时刻)
+                        LR->>FS: 全量快照覆盖写（错误行 ANSI 红色标注）+ errorHit
+                    else 全部假错误
+                        Note over LR: 不落盘不告警
+                    else 调用失败
+                        LR->>FS: 降级关键字即真（连续3次失败熔断）
+                    end
+                else LLM 禁用（--llm-endpoint=""）
+                    LR->>FS: 命中即落盘（缓冲 + 增量追加，--log-dump 开启时）
+                end
             end
-            par 退出检测（1s ticker）
+            par 退出检测（1s ticker，删除中 Pod 豁免）
                 CHK->>K8S: containerExitCode / totalRestartCount
             end
-            alt 容器异常退出（exit code != 0）
-                CHK->>FA: alert(EventContainerExit) + waitLogFlush
+            alt 容器异常退出（exit code != 0，含 Ready 前崩溃）
+                CHK->>FA: alert(EventContainerExit) + waitLogFlush（取消阶段2）
                 CHK-->>CLI: 退出 code=3
             else 重启次数超限
                 CHK->>FA: alert(EventRestartLimit)
@@ -210,7 +240,7 @@ sequenceDiagram
             else 日志窗口结束且 errorHit（Pod 存活）
                 CHK->>FA: alert(EventPendingCheck)「需要检查」（非阻塞）
                 CHK-->>CLI: 退出 code=0
-            else 日志窗口结束无错误
+            else 日志窗口结束无真错误
                 CHK-->>CLI: 退出 code=0
             end
         end
@@ -221,22 +251,23 @@ sequenceDiagram
 <!-- ============ 4. 状态图 ============ -->
 <div class="card" id="state">
   <h2>4. 状态图<span class="tag">State</span></h2>
-  <p class="desc">插件生命周期（无整体超时、无稳定窗口）：解析 → 第一级 Deployment informer 等待就绪（超时告警并直接退出）→ 第二级「阶段2 状态轮询 → 阶段3 日志观察」→ 按优先级判定场景（1/2/3）→ 退出。</p>
+  <p class="desc">插件生命周期（无整体超时、无稳定窗口）：解析 → 阶段1 目标锁定（超时告警并直接退出）→「阶段2 就绪等待 → 阶段3 日志观察 + LLM 仲裁」→ 按优先级判定场景（1/2/3）→ 退出。</p>
   <pre class="mermaid">
 stateDiagram-v2
     [*] --> Parsing : cobra Execute
-    Parsing --> Checking : 参数合法
+    Parsing --> Locking : 参数合法
     Parsing --> [*] : 参数非法 / -h
-    Checking --> Waiting : informer 缓存同步完成
-    Waiting --> Monitoring : rolloutComplete 命中（四条件）
-    Waiting --> [*] : 就绪超时 (告警后退出, code=2)
-    Monitoring --> PodReady : Pod 在 pod-ready-timeout 内进入 Running
-    Monitoring --> PodNotReady : Pod 未进入 Running / 容器退出 / 重启超限
-    Monitoring --> LogHit : Pod 就绪且存活但日志命中错误
+    Locking --> Monitoring : 三分支锁定目标 Pod（收敛有 Pod / 等到更新 / 谓词满足）
+    Locking --> [*] : 锁定超时 (告警后退出, code=2)
+    Monitoring --> PodReady : Pod 在 pod-ready-timeout 内就绪（PodReady 条件）
+    Monitoring --> PodNotReady : Pod 未就绪 / 容器退出 / 重启超限
+    Monitoring --> Removed : Pod 被 controller 删除（surge/回滚）
+    Removed --> [*] : 静默跳过（非故障）
+    Monitoring --> LogHit : Pod 就绪且存活但存在真错误日志
     PodNotReady --> [*] : 发送告警（EventPodStatus/ContainerExit/RestartLimit）, exit=3
-    LogHit --> NotifyCheck : 日志窗口结束（命中错误日志已落盘）
+    LogHit --> NotifyCheck : 日志窗口结束（--log-dump 开启时 SinceTime 全量日志已落盘）
     NotifyCheck --> [*] : 发送「需要检查」提醒 (非阻塞), exit=0
-    PodReady --> [*] : 无错误日志, exit=0
+    PodReady --> [*] : 无真错误日志, exit=0
     Monitoring --> [*] : 收到中断信号<br/>发送 EventInterrupted 告警, exit=130
   </pre>
 </div>
@@ -252,45 +283,45 @@ stateDiagram-v2
     <tbody>
       <tr>
         <td>1</td>
-        <td>场景1：Pod 在 pod-ready-timeout 内就绪，无错误日志</td>
+        <td>场景1：Pod 在 pod-ready-timeout 内就绪，无真错误日志</td>
         <td>正常结束</td>
         <td><span class="badge green">0</span></td>
         <td>无</td>
       </tr>
       <tr>
         <td>2</td>
-        <td>场景2：Pod 未进入 Running / 容器异常退出 / 重启超限</td>
+        <td>场景2：Pod 未就绪（Ready 超时）/ 容器异常退出 / 重启超限</td>
         <td>发送告警后异常退出（<code>--max-restart</code> 为 0 时不检查重启次数）</td>
         <td><span class="badge red">3</span></td>
         <td>Pod 状态异常 / 容器异常退出 / 重启次数超限（优先飞书，降级控制台）</td>
       </tr>
       <tr>
         <td>3</td>
-        <td>场景3：Pod 已就绪且存活但日志命中错误关键字</td>
-        <td>日志全程 Follow 实时流增量落盘（错误行红色标注），窗口结束后发送「需要检查」提醒</td>
+        <td>场景3：Pod 已就绪且存活但日志存在真错误（LLM 仲裁确认或降级命中）</td>
+        <td>--log-dump 开启时 SinceTime 全量快照落盘（错误行红色标注），窗口结束后发送「需要检查」提醒；全部假错误则不落盘不告警</td>
         <td><span class="badge green">0</span></td>
-        <td>需要检查（非阻塞，不影响退出码）</td>
+        <td>需要检查（非阻塞，不影响退出码；仅真错误触发）</td>
       </tr>
       <tr>
         <td>4</td>
-        <td>第一级：Deployment 超时未就绪（<code>rolloutComplete</code> 四条件未满足）</td>
-        <td>告警后直接退出（不进入第二级）</td>
+        <td>目标定位未找到目标 Pod（<code>replicas=0</code> 无目标可等，或 <code>pod-ready-timeout</code> 窗口内未出现）</td>
+        <td>告警后直接退出（不进入阶段2/3）</td>
         <td><span class="badge gray">2*</span></td>
-        <td>Deployment 就绪超时（优先飞书，降级控制台）</td>
+        <td>未找到目标 Pod（优先飞书，降级控制台）</td>
       </tr>
       <tr>
         <td>5</td>
         <td>命中忽略关键字（<code>--log-ignore-keywords</code>）</td>
-        <td>仍追加落盘但不标红、不作为错误，继续追踪</td>
+        <td>不参与仲裁/判定、落盘时不标红，继续追踪</td>
         <td><span class="badge gray">-</span></td>
         <td>无</td>
       </tr>
       <tr>
         <td>6</td>
-        <td>未产生任何 Pod</td>
-        <td>按 Pod 状态异常处理，发送告警后异常退出</td>
-        <td><span class="badge red">3</span></td>
-        <td>未产生 Pod（优先飞书，降级控制台）</td>
+        <td>发布刚触发（新 RS 已创建但 Pod 尚未出现）或滚动进行中启动</td>
+        <td>轮询等待目标 Pod 出现（含 Pending）后进入阶段2/3，竞态窗口不误判、慢启动应用早期日志不丢失；surge 临时副本被删除时静默豁免</td>
+        <td><span class="badge gray">-</span></td>
+        <td>无（仅删除中 Pod 豁免，不误报）</td>
       </tr>
       <tr>
         <td>7</td>
@@ -322,18 +353,20 @@ stateDiagram-v2
   <h2>6. 关键设计决策<span class="tag">Decisions</span></h2>
   <ul class="tight">
     <li><strong>命令行框架 cobra</strong>：<code>github.com/spf13/cobra</code>，遵循 kubectl 原生参数风格。</li>
-    <li><strong>两级独立检查，无整体超时</strong>：三段超时 <code>--deploy-ready-timeout</code> / <code>--pod-ready-timeout</code> / <code>--log-check-timeout</code> 相互独立，无顶层兜底超时、无 stable 稳定窗口。</li>
-    <li><strong>第一级 Deployment 就绪超时直接中断</strong>：informer 事件驱动 + <code>rolloutComplete</code> 四条件判定；超时未就绪发送告警（优先飞书 / 降级控制台）后，以退出码 2 直接退出，不再进入第二级 Pod 检查。</li>
-    <li><strong>第二级为轮询实现</strong>：Pod 侧不使用 informer，<code>waitForTargetPods</code> / <code>waitPodRunning</code> / 退出检测均为 1s 间隔 List/Get 轮询；仅第一级 Deployment 使用 informer 事件驱动。</li>
-    <li><strong>优先级：Pod 异常 &gt; 日志告警</strong>：场景2（Pod 未进入 Running / 容器退出 / 重启超限）→ 告警 + 异常退出 code=3；即便同时命中错误日志也按场景2。</li>
-    <li><strong>场景3：Pod 就绪且存活但日志命中错误</strong>：命中错误日志已落盘（错误行红色标注），日志窗口结束后发送「需要检查」提醒，<strong>不退出</strong>（code=0，非阻塞）。</li>
-    <li><strong>命中错误关键字才落盘（先缓冲后增量追加，O_APPEND）</strong>：未命中错误前内存缓冲（环形缓冲，容量随 --log-tail 放大），首次命中错误时打开文件写入「启动到报错」日志，此后增量追加；未命中错误且未报错退出的正常应用<strong>不产生日志文件</strong>；容器异常退出也落盘保留现场。</li>
+    <li><strong>仅校验 Pod 层级，无整体超时</strong>：不校验 Deployment 的超时与滚动状态（无 <code>--deploy-ready-timeout</code>）；两段超时 <code>--pod-ready-timeout</code>（目标定位等待 + Pod 就绪）/ <code>--log-check-timeout</code>（日志观察）相互独立，无顶层兜底超时、无 stable 稳定窗口。</li>
+    <li><strong>目标定位等待目标 Pod 出现而非收敛等待</strong>：<code>locateTargetPods</code> 在 <code>pod-ready-timeout</code> 窗口内 1s 轮询等待最新 revision RS 的目标 Pod 出现（含 Pending，覆盖"发布刚触发、新 RS 已创建但 Pod 尚未创建"的竞态窗口），不校验 <code>rolloutComplete</code>/observedGeneration 等滚动状态；<code>replicas=0</code> 或窗口内未出现，发送告警（优先飞书 / 降级控制台）后以退出码 2 直接退出。</li>
+    <li><strong>轮询实现</strong>：阶段2/3 为 1s 间隔 List/Get 轮询（informer 已删除）；轮询比事件组合简单、可测。</li>
+    <li><strong>阶段2 就绪判定含探针校验</strong>：<code>waitFirstRunning + waitReady</code> 等待 PodReady 条件 True（无探针容器 Running 即就绪）；阶段3 从首次 Running 启动与阶段2 并行（有探针时 0/1 Running 期间共同作用，Ready 前容器崩溃立即告警）；controller 删除中的 Pod（surge 缩容/回滚）静默豁免不计异常。</li>
+    <li><strong>优先级：Pod 异常 &gt; 日志告警</strong>：场景2（Pod 未就绪 / 容器退出 / 重启超限）→ 告警 + 异常退出 code=3；即便同时存在真错误日志也按场景2。</li>
+    <li><strong>LLM 日志错误仲裁（--llm-enable 开启，默认关闭）</strong>：命中行进 pod 级有界 channel，攒批（10 行/2s）+ 去重后经 OpenAI 兼容协议（默认端点智谱 GLM，标准库实现，非流式 temperature=0）批量判定；<strong>存在任一真错误才</strong>置 errorHit（--log-dump 开启时以容器启动时刻为起点 SinceTime 全量拉取覆盖写快照）；调用失败降级关键字即真，连续 3 次失败熔断；<code>--llm-enable=false</code>（默认）或 <code>--llm-endpoint=""</code> 回退关键字即真行为。</li>
+    <li><strong>场景3：Pod 就绪且存活但存在真错误日志</strong>：日志窗口结束后发送「需要检查」提醒，<strong>不退出</strong>（code=0，非阻塞）；告警与落盘同门槛（仅真错误），落盘受 <code>--log-dump</code> 开关控制（默认关闭，开启时 SinceTime 全量日志落盘、错误行红色标注）。</li>
     <li><strong>错误行红色标注</strong>：命中 <code>--log-err-keywords</code> 的行以 ANSI <code>\x1b[31m...\x1b[0m</code> 标红；忽略行不标红。</li>
     <li><strong>告警非阻塞</strong>：飞书发送独立 goroutine + 短超时，失败仅 warning，不影响主流程判定与退出码。</li>
     <li><strong>未配置 Webhook 降级控制台</strong>：<code>--feishu-webhook</code> 为空时，所有告警事件降级为控制台直接打印（带去重），不静默丢弃；退出码与判定逻辑不变。</li>
     <li><strong>退出码 130 = 中断主动退出</strong>：收到 SIGINT/SIGTERM 触发 <code>Interrupt()</code>：取消上下文 → 等待收尾 → 发送 <code>EventInterrupted</code> 告警后退出，不误报为业务错误。</li>
-    <li><strong>时间参数秒级化</strong>：<code>--deploy-ready-timeout</code> / <code>--pod-ready-timeout</code> / <code>--log-check-timeout</code> / <code>--feishu-dedup-window</code> 统一为整数秒（int 秒）。</li>
+    <li><strong>时间参数秒级化</strong>：<code>--pod-ready-timeout</code> / <code>--log-check-timeout</code> / <code>--llm-timeout</code> / <code>--feishu-dedup-window</code> 统一为整数秒（int 秒）。</li>
     <li><strong>文件命名</strong>：<code>{namespace}-{podName}-{date}.log</code>（date=20060102，跨天自动切换）。</li>
+    <li><strong>LLM 安全</strong>：默认 API Key 内置于源码（仓库公开需轮换）；日志行发送至配置端点（默认云端），敏感场景指向内网自建端点；API Key 不落日志。</li>
   </ul>
 </div>
 

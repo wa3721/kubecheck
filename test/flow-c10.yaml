@@ -12,7 +12,7 @@
 #   kubectl-check deployment/flow-c10 -n flowtest \
 #     --log-error-dir /tmp/flowlogs --log-error-keyword ERROR \
 #     --max-restart 1 \
-#     --deploy-ready-timeout 90 --pod-ready-timeout 30 --log-check-timeout 120
+#     --pod-ready-timeout 30 --log-check-timeout 120
 # 期望：exit 3；控制台告警"重启次数超过上限"；不产生落盘文件。
 apiVersion: apps/v1
 kind: Deployment

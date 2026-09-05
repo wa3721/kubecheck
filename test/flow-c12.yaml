@@ -6,7 +6,7 @@
 # 运行：
 #   kubectl-check deployment/flow-c12 -n flowtest \
 #     --log-error-dir /tmp/flowlogs --log-error-keyword ERROR FATAL \
-#     --deploy-ready-timeout 60 --pod-ready-timeout 30 --log-check-timeout 12
+#     --pod-ready-timeout 30 --log-check-timeout 12
 # 期望：exit 0；/tmp/flowlogs 下不产生 flowtest-flow-c12-*.log 文件。
 apiVersion: apps/v1
 kind: Deployment
