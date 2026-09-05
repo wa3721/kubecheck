@@ -1,0 +1,125 @@
+# CI/CD：推代码自动构建并发布 Release 制品
+#
+# 触发方式（两种）：
+#   1. push 到 master      -> 跑测试 + 5 平台构建，发布到滚动更新的 "continuous" 预发布
+#                              （同名 Release 每次推送自动覆盖，始终是最新构建）
+#   2. push v* 标签        -> 同样流程，发布正式 Release（自动生成 Changelog）
+#                              用法: git tag v0.1.0 && git push origin v0.1.0
+#
+# 制品：kubectl-check-<os>-<arch>[.exe]（linux/darwin 打 tar.gz，windows 打 zip）+ checksums.txt
+# 命名与 Makefile 交叉编译规则保持一致；无需任何 Secret（使用内置 GITHUB_TOKEN）
+
+name: Release
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------- 阶段1：测试（不过不发版） ----------
+  test:
+    name: Test (linux/amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit tests
+        run: go test ./... -count=1
+
+  # ---------- 阶段2：交叉编译 5 平台（并行矩阵） ----------
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    env:
+      CGO_ENABLED: 0
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build & package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
+          BIN="kubectl-check-$GOOS-$GOARCH$EXT"
+          go build -trimpath -ldflags="-s -w" -o "dist/$BIN" .
+          if [ "$GOOS" = "windows" ]; then
+            (cd dist && zip -q "$BIN.zip" "$BIN")
+          else
+            (cd dist && tar czf "kubectl-check-$GOOS-$GOARCH.tar.gz" "$BIN")
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  # ---------- 阶段3：汇总制品并发布 Release ----------
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          # 只保留归档制品（tar.gz / zip），删除裸二进制
+          find . -maxdepth 1 -type f ! -name '*.tar.gz' ! -name '*.zip' -delete
+          sha256sum * > checksums.txt
+          ls -la
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            # 正式版：v* 标签触发，自动生成 Changelog
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              --notes-footer "安装：下载对应平台制品解压，重命名为 kubectl-check 后放入 PATH（kubectl 插件规范）。"
+          else
+            # 滚动预发布：master 每次推送覆盖更新 "continuous"
+            gh release delete continuous --yes --cleanup-tag 2>/dev/null || true
+            gh release create continuous dist/* \
+              --prerelease \
+              --title "Continuous Build" \
+              --notes "master 分支最新自动构建（commit \`$GITHUB_SHA\`，每次推送自动覆盖更新）。
+          下载对应平台制品 + checksums.txt 校验后使用；正式版本请看右侧 Releases 的 v* 标签。"
+          fi
