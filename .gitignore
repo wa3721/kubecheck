@@ -6,3 +6,6 @@ temp/
 
 # 本地运行日志
 *.log
+
+# IDE 配置
+.idea/
