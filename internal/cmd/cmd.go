@@ -104,6 +104,8 @@ rollout 由 CICD 触发，本工具只监视与告警，不做任何实际更新
 	flags.StringVar(&opts.FeishuWebhook, "feishu-webhook", "", "飞书机器人 Webhook 地址，非空启用告警")
 	flags.StringVar(&opts.FeishuSecret, "feishu-secret", "", "飞书签名校验密钥（HMAC-SHA256）")
 	flags.IntVar(&opts.FeishuDedupWindowSec, "feishu-dedup-window", 30, "同 Pod+同事件告警去重窗口（秒）")
+	flags.Float32Var(&opts.ClientQPS, "client-qps", 50, "client-go 客户端每秒最大请求数（QPS），副本较多时调高可避免客户端限流等待")
+	flags.IntVar(&opts.ClientBurst, "client-burst", 100, "client-go 客户端突发请求上限（Burst），需不小于 --client-qps")
 	flags.StringVar(&opts.LLMEndpoint, "llm-endpoint", llm.DefaultEndpoint,
 		"日志错误仲裁 LLM 端点（OpenAI 兼容，默认智谱 GLM），仅 --llm-enable 开启时生效")
 	flags.BoolVar(&opts.LLMEnable, "llm-enable", false, "LLM 日志仲裁开关（默认 false 关闭，回退关键字即真）；开启后由 --llm-endpoint 决定端点（需配合 --keyword-check 提供命中输入）")
@@ -191,13 +193,23 @@ func parseArgs(c *cobra.Command, args []string, opts *options.Options) error {
 	if opts.LogErrorDir == "" {
 		opts.LogErrorDir = "."
 	}
+	// client-go 限流默认值兜底（与 flag 默认一致）：非正值回填，避免程序化/测试调用未设时报错
+	if opts.ClientQPS <= 0 {
+		opts.ClientQPS = 50
+	}
+	if opts.ClientBurst <= 0 {
+		opts.ClientBurst = 100
+	}
+	if opts.ClientBurst < int(opts.ClientQPS) {
+		return fmt.Errorf("--client-burst（%d）不能小于 --client-qps（%v）", opts.ClientBurst, opts.ClientQPS)
+	}
 	return nil
 }
 
 // run 主流程编排：构建客户端 -> 注册信号处理 -> Checker.Run -> 按退出码退出。
 // 监听模式（-A 或 -n 过滤）走 watcher 常驻流程（Deployment 创建/更新自动检查）。
 func run(c *cobra.Command, opts *options.Options) error {
-	clientset, err := buildClient()
+	clientset, err := buildClient(opts.ClientQPS, opts.ClientBurst)
 	if err != nil {
 		fmt.Println(console.Red(fmt.Sprintf("[ERROR] 构建 Kubernetes 客户端失败: %v", err)))
 		return err
@@ -249,13 +261,21 @@ func runWatchMode(opts *options.Options, clientset kubernetes.Interface) error {
 	return nil
 }
 
-// buildClient 构建 K8s 客户端（优先 kubeconfig，支持 KUBECONFIG 环境变量）
-func buildClient() (*kubernetes.Clientset, error) {
+// buildClient 构建 K8s 客户端（优先 kubeconfig，支持 KUBECONFIG 环境变量）。
+// qps/burst 用于覆盖 client-go 默认限流（QPS=5、Burst=10），副本较多时
+// 并发请求会触发 "client-side throttling" 本地排队，调高后可消除该等待。
+func buildClient(qps float32, burst int) (*kubernetes.Clientset, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	configOverrides := &clientcmd.ConfigOverrides{}
 	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides).ClientConfig()
 	if err != nil {
 		return nil, err
+	}
+	if qps > 0 {
+		config.QPS = qps
+	}
+	if burst > 0 {
+		config.Burst = burst
 	}
 	return kubernetes.NewForConfig(config)
 }

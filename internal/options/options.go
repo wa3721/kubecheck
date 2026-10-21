@@ -44,6 +44,11 @@ type Options struct {
 	FeishuSecret         string
 	FeishuDedupWindowSec int // 同 Pod+同事件告警去重窗口（秒）
 
+	// client-go 客户端限流（QPS/Burst）：默认值 5/10 在副本较多时并发请求会触发
+	// "client-side throttling" 本地排队等待，调高后可消除该等待。
+	ClientQPS   float32 // 客户端每秒最大请求数
+	ClientBurst int     // 客户端突发请求上限
+
 	Verbose bool
 }
 
